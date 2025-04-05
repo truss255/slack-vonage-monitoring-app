@@ -17,7 +17,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON
 
 # Google Sheets setup
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
+creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
 sheets_service = build('sheets', 'v4', credentials=creds)
 
 # Slack API setup
