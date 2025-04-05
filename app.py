@@ -13,25 +13,100 @@ ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
 SHEET_ID = os.environ["SHEET_ID"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # Handle the service account JSON from environment variable
+GOOGLE_SERVICE_ACCOUNT_JSON = None
+
 try:
-    GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    # First, try direct parsing
+    raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+
+    # Print the first few characters for debugging (avoid printing the entire key for security)
+    if len(raw_json) > 10:
+        print(f"GOOGLE_SERVICE_ACCOUNT_JSON starts with: {raw_json[:10]}...")
+        print(f"Length of GOOGLE_SERVICE_ACCOUNT_JSON: {len(raw_json)} characters")
+
+    GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(raw_json)
+    print("Successfully parsed GOOGLE_SERVICE_ACCOUNT_JSON")
 except json.JSONDecodeError as e:
     print(f"Error parsing GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
-    # If the JSON is improperly formatted, try to fix common issues
-    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    # Replace single quotes with double quotes if needed
-    if raw_json.startswith("{") and "'" in raw_json:
-        fixed_json = raw_json.replace("'", "\"")
+    # Print more detailed information about the JSON format
+    if len(raw_json) > 0:
+        print(f"First character: '{raw_json[0]}', ASCII value: {ord(raw_json[0])}")
+        if len(raw_json) > 1:
+            print(f"Second character: '{raw_json[1]}', ASCII value: {ord(raw_json[1])}")
+        # Check for common issues
+        if raw_json.startswith("{") and not raw_json.startswith("{\""):
+            print("JSON appears to use incorrect quote format for property names")
+        elif raw_json.startswith("'") or raw_json.startswith('"'):
+            print("JSON appears to be wrapped in quotes, which is invalid")
+    try:
+        # Try fixing common issues with JSON formatting
+        raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+
+        # Check if it's wrapped in single quotes
+        if raw_json.startswith("'") and raw_json.endswith("'"):
+            raw_json = raw_json[1:-1]
+
+        # Try various fixes for common JSON formatting issues
+        fixed_json = raw_json
+
+        # 1. Replace single quotes with double quotes
+        if "'" in fixed_json:
+            fixed_json = fixed_json.replace("'", "\"")
+
+        # 2. Handle escaped newlines in private_key
+        if "\\n" in fixed_json:
+            # This is common in Railway where newlines get escaped
+            fixed_json = fixed_json.replace("\\n", "\n")
+
+        # 3. Handle double-escaped newlines
+        if "\\\\n" in fixed_json:
+            fixed_json = fixed_json.replace("\\\\n", "\n")
+
+        # 4. Check if the JSON is a string representation of a JSON object
+        if fixed_json.startswith('"') and fixed_json.endswith('"') and '{' in fixed_json and '}' in fixed_json:
+            # This might be a string-encoded JSON, try to unescape it
+            try:
+                # First parse it as a string
+                string_value = json.loads(fixed_json)
+                # Then parse the string as JSON
+                if isinstance(string_value, str) and string_value.startswith('{') and string_value.endswith('}'):
+                    fixed_json = string_value
+                    print("Detected string-encoded JSON, attempting to parse the inner content")
+            except:
+                # If this fails, continue with other approaches
+                pass
+
         try:
             GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(fixed_json)
-            print("Successfully parsed JSON after fixing quotes")
-        except json.JSONDecodeError:
-            print("Failed to parse JSON even after fixing quotes")
-            raise
+            print("Successfully parsed JSON after applying fixes")
+        except json.JSONDecodeError as e:
+            print(f"Still failed to parse JSON after fixes: {e}")
+            # If we can't parse it, create a minimal valid JSON
+            print("Could not parse service account JSON, using empty object")
+            GOOGLE_SERVICE_ACCOUNT_JSON = {}
+    except Exception as e:
+        print(f"Failed to process service account JSON: {e}")
+        # Provide a fallback empty JSON object
+        GOOGLE_SERVICE_ACCOUNT_JSON = {}
+
+# Check if we have a valid service account JSON
+if not GOOGLE_SERVICE_ACCOUNT_JSON or not isinstance(GOOGLE_SERVICE_ACCOUNT_JSON, dict):
+    print("WARNING: Invalid or missing Google service account credentials")
+    # Create a minimal valid JSON structure
+    GOOGLE_SERVICE_ACCOUNT_JSON = {}
 
 # ========== GOOGLE SHEETS CLIENT ==========
-creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
-sheets_service = build("sheets", "v4", credentials=creds)
+sheets_service = None
+try:
+    # Only attempt to create credentials if we have a valid service account JSON
+    if GOOGLE_SERVICE_ACCOUNT_JSON and isinstance(GOOGLE_SERVICE_ACCOUNT_JSON, dict) and GOOGLE_SERVICE_ACCOUNT_JSON.get("type") == "service_account":
+        creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
+        sheets_service = build("sheets", "v4", credentials=creds)
+        print("Successfully initialized Google Sheets service")
+    else:
+        print("WARNING: Invalid Google service account JSON format, Sheets functionality will be disabled")
+except Exception as e:
+    print(f"ERROR: Failed to initialize Google Sheets service: {e}")
 
 # ========== SLACK ==========
 headers = {
@@ -146,15 +221,22 @@ def view_submission():
     action = values["action"]["action_taken"]["selected_option"]["text"]["text"]
     user = payload["user"]["username"]
 
-    # Log into Google Sheet
-    sheet_name = date_range
-    body = {"values": [[datetime.utcnow().isoformat(), f"@{user}", action]]}
-    sheets_service.spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
-        range=f"'{sheet_name}'!A1",
-        valueInputOption="USER_ENTERED",
-        body=body
-    ).execute()
+    # Log into Google Sheet if the service is available
+    try:
+        if sheets_service:
+            sheet_name = date_range
+            body = {"values": [[datetime.utcnow().isoformat(), f"@{user}", action]]}
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=SHEET_ID,
+                range=f"'{sheet_name}'!A1",
+                valueInputOption="USER_ENTERED",
+                body=body
+            ).execute()
+            print(f"Successfully logged follow-up action to Google Sheet: {sheet_name}")
+        else:
+            print("WARNING: Google Sheets service not available, skipping logging")
+    except Exception as e:
+        print(f"ERROR: Failed to log to Google Sheet: {e}")
 
     return jsonify({"response_action": "clear"}), 200
 
