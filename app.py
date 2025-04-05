@@ -8,19 +8,19 @@ from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
-# Env Vars
+# Slack + Sheet config
 SLACK_BOT_TOKEN = os.environ['SLACK_BOT_TOKEN']
 SLACK_SIGNING_SECRET = os.environ['SLACK_SIGNING_SECRET']
 SHEET_ID = os.environ['SHEET_ID']
 ALERT_CHANNEL_ID = os.environ['ALERT_CHANNEL_ID']
-GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 
-# Google Sheets setup
+# Google Sheets credentials from file
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', 'service_account.json')
+creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 sheets_service = build('sheets', 'v4', credentials=creds)
 
-# Slack API setup
+# Slack post message setup
 headers = {
     'Authorization': f'Bearer {SLACK_BOT_TOKEN}',
     'Content-Type': 'application/json'
@@ -31,13 +31,7 @@ def post_slack_message(channel, blocks):
         "channel": channel,
         "blocks": blocks
     }
-    response = requests.post('https://slack.com/api/chat.postMessage', headers=headers, json=payload)
-    if not response.ok:
-        print("Slack API Error:", response.text)
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Slack + Vonage App is running!", 200
+    requests.post('https://slack.com/api/chat.postMessage', headers=headers, json=payload)
 
 @app.route("/vonage-events", methods=["POST"])
 def vonage_events():
@@ -64,9 +58,7 @@ def slack_interactions():
     response_url = payload["response_url"]
 
     if action == "assign":
-        requests.post(response_url, json={
-            "text": f"✅ Assigned to: @{user}"
-        })
+        requests.post(response_url, json={"text": f"✅ Assigned to: @{user}"})
     return "", 200
 
 @app.route("/daily-report", methods=["GET"])
@@ -88,4 +80,4 @@ def daily_report():
     return jsonify({"status": "report sent"}), 200
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
