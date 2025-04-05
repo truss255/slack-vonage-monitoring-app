@@ -12,7 +12,22 @@ SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
 SHEET_ID = os.environ["SHEET_ID"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+# Handle the service account JSON from environment variable
+try:
+    GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+except json.JSONDecodeError as e:
+    print(f"Error parsing GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+    # If the JSON is improperly formatted, try to fix common issues
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    # Replace single quotes with double quotes if needed
+    if raw_json.startswith("{") and "'" in raw_json:
+        fixed_json = raw_json.replace("'", "\"")
+        try:
+            GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(fixed_json)
+            print("Successfully parsed JSON after fixing quotes")
+        except json.JSONDecodeError:
+            print("Failed to parse JSON even after fixing quotes")
+            raise
 
 # ========== GOOGLE SHEETS CLIENT ==========
 creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
