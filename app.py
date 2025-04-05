@@ -8,20 +8,19 @@ from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
+# Env Vars
 SLACK_BOT_TOKEN = os.environ['SLACK_BOT_TOKEN']
 SLACK_SIGNING_SECRET = os.environ['SLACK_SIGNING_SECRET']
 SHEET_ID = os.environ['SHEET_ID']
 ALERT_CHANNEL_ID = os.environ['ALERT_CHANNEL_ID']
-GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT_JSON'])
+GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 
 # Google Sheets setup
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-import json
-GOOGLE_SERVICE_ACCOUNT_JSON = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
 sheets_service = build('sheets', 'v4', credentials=creds)
 
-# Slack message post
+# Slack API setup
 headers = {
     'Authorization': f'Bearer {SLACK_BOT_TOKEN}',
     'Content-Type': 'application/json'
@@ -32,12 +31,17 @@ def post_slack_message(channel, blocks):
         "channel": channel,
         "blocks": blocks
     }
-    requests.post('https://slack.com/api/chat.postMessage', headers=headers, json=payload)
+    response = requests.post('https://slack.com/api/chat.postMessage', headers=headers, json=payload)
+    if not response.ok:
+        print("Slack API Error:", response.text)
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Slack + Vonage App is running!", 200
 
 @app.route("/vonage-events", methods=["POST"])
 def vonage_events():
     data = request.json
-    # Example of basic alert
     agent = data.get("agent", {}).get("name", "Unknown")
     event_type = data.get("eventType")
     duration = data.get("duration", "N/A")
