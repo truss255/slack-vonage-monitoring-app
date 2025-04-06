@@ -58,8 +58,6 @@ headers = {
 
 # ========== EMPLOYEE OPTIONS FOR MULTI-SELECT ==========
 employee_options = [
-    {"text": {"type": "plain_text", "text": "Adriana Jimenez Cartagena"}, "value": "adriana_jimenez_cartagena"},
-    {"text": {"type": "plain_text", "text": "Brandon Pagan"}, "value": "brandon_pagan"},
     {"text": {"type": "plain_text", "text": "Briana Roque"}, "value": "briana_roque"},
     {"text": {"type": "plain_text", "text": "Carla Hagerman"}, "value": "carla_hagerman"},
     {"text": {"type": "plain_text", "text": "Carleisha Smith"}, "value": "carleisha_smith"},
@@ -73,7 +71,6 @@ employee_options = [
     {"text": {"type": "plain_text", "text": "Jeanette Bantz"}, "value": "jeanette_bantz"},
     {"text": {"type": "plain_text", "text": "Jesse Lorenzana Escarfullery"}, "value": "jesse_lorenzana_escarfullery"},
     {"text": {"type": "plain_text", "text": "Jessica Lopez"}, "value": "jessica_lopez"},
-    {"text": {"type": "plain_text", "text": "Jonathan Rublee"}, "value": "jonathan_rublee"},
     {"text": {"type": "plain_text", "text": "Lakeira Robinson"}, "value": "lakeira_robinson"},
     {"text": {"type": "plain_text", "text": "Lyne Jean"}, "value": "lyne_jean"},
     {"text": {"type": "plain_text", "text": "Natalie Sukhu"}, "value": "natalie_sukhu"},
@@ -120,35 +117,12 @@ def get_emoji_for_event(event_type):
 
 # ========== AGENT ID TO NAME MAPPING ==========
 agent_id_to_name = {
-    "1044": "Adriana Jimenez Cartegena",
-    # Add more mappings as needed, e.g.:
-    # "1045": "Angie Rivera",
-    # "1046": "Brandon Pagan Sostre",
+    "1044": "Adriana Jimenez Cartagena",
 }
 
 # ========== SHIFT DETAILS ==========
 agent_shifts = {
-    "Adriana Jimenez Cartegena": {
-        "timezone": "Atlantic",
-        "shifts": {
-            "Mon": ("9am", "5pm"),
-            "Tue": ("9am", "5pm"),
-            "Wed": ("9am", "5pm"),
-            "Thu": ("9am", "5pm"),
-            "Fri": ("9am", "5pm")
-        }
-    },
-    "Angie Rivera": {
-        "timezone": "Eastern",
-        "shifts": {
-            "Mon": ("12PM", "8PM"),
-            "Tue": ("12PM", "8PM"),
-            "Wed": ("12PM", "8PM"),
-            "Thu": ("12PM", "8PM"),
-            "Fri": ("11am", "7pm")
-        }
-    },
-    "Brandon Pagan Sostre": {
+    "Briana Roque": {
         "timezone": "Atlantic",
         "shifts": {
             "Mon": ("11am", "7pm"),
@@ -156,26 +130,6 @@ agent_shifts = {
             "Wed": ("11am", "7pm"),
             "Thu": ("11am", "7pm"),
             "Fri": ("11am", "7pm")
-        }
-    },
-    "Briana Pagan": {
-        "timezone": "Atlantic",
-        "shifts": {
-            "Mon": ("11am", "7pm"),
-            "Tue": ("11am", "7pm"),
-            "Wed": ("11am", "7pm"),
-            "Thu": ("11am", "7pm"),
-            "Fri": ("11am", "7pm")
-        }
-    },
-    "Brittany Bland": {
-        "timezone": "Central",
-        "shifts": {
-            "Mon": ("8am", "4pm"),
-            "Tue": ("8am", "4pm"),
-            "Wed": ("8am", "4pm"),
-            "Thu": ("8am", "4pm"),
-            "Fri": ("8am", "4pm")
         }
     },
     "Carla Hagerman": {
@@ -218,17 +172,7 @@ agent_shifts = {
             "Sat": ("12pm", "8pm")
         }
     },
-    "Danitza Maravilla": {
-        "timezone": "Pacific",
-        "shifts": {
-            "Sun": ("11am", "7pm"),
-            "Mon": ("11am", "7pm"),
-            "Tue": ("11am", "7pm"),
-            "Wed": ("11am", "7pm"),
-            "Thu": ("11am", "7pm")
-        }
-    },
-    "Dejah \"Dee\" Blackwell": {
+    "Dajah Blackwell": {
         "timezone": "Central",
         "shifts": {
             "Sun": ("10am", "6pm"),
@@ -288,7 +232,7 @@ agent_shifts = {
             "Sat": ("8am", "4pm")
         }
     },
-    "Jesse Lorenzana": {
+    "Jesse Lorenzana Escarfullery": {
         "timezone": "Atlantic",
         "shifts": {
             "Mon": ("11am", "7pm"),
@@ -387,12 +331,11 @@ agent_teams = {
     "Felicia Martin": "Team Adriana 💎",
     "Felicia Randall": "Team Adriana 💎",
     "Jeanette Bantz": "Team Adriana 💎",
-    "Jesse Lorenzana": "Team Adriana 💎",
+    "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
     "Nicole Coleman": "Team Adriana 💎",
     "Peggy Richardson": "Team Adriana 💎",
     "Ramona Marshall": "Team Adriana 💎",
     "Lyne Jean": "Team Bee Hive 🐝",
-    "Danitza Maravilla": "Team Bee Hive 🐝",
     "Crystalbell Miranda": "Team Bee Hive 🐝",
     "Cassandra Dunn": "Team Bee Hive 🐝",
     "Briana Roque": "Team Bee Hive 🐝",
@@ -565,6 +508,7 @@ def vonage_events():
 
         # Extract agent name
         agent = None
+        agent_id = None
         if event_type == "agent.presencechanged.v1":
             agent_id = event_data.get("user", {}).get("agentId", None)
             if agent_id:
@@ -576,14 +520,18 @@ def vonage_events():
                     break
         elif "channel" in event_data and "party" in event_data["channel"]:
             agent = event_data["channel"]["party"].get("address", None)
+            if not agent and event_data["channel"]["party"].get("role") == "agent":
+                agent_id = event_data["channel"]["party"].get("agentId", None)
+                if agent_id:
+                    agent = agent_id_to_name.get(agent_id, None)
         elif "user" in event_data:  # Fallback for events like channel.alerted.v1, channel.connected.v1
             agent_id = event_data.get("user", {}).get("agentId", None)
             if agent_id:
                 agent = agent_id_to_name.get(agent_id, None)
 
         if not agent:
-            print("ERROR: Could not determine agent name from Vonage payload")
-            return jsonify({"status": "error", "message": "Could not determine agent name"}), 400
+            print(f"WARNING: Could not determine agent name from Vonage payload. Agent ID: {agent_id}")
+            return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
 
         # Extract duration (convert from milliseconds to minutes)
         duration_ms = 0
