@@ -397,24 +397,47 @@ def parse_duration(duration):
         return 0
 
 # ========== STATUS RULES ==========
-def should_trigger_alert(event_type, duration_min, is_in_shift):
-    if event_type in ["Wrap", "Outgoing Wrap Up"] and duration_min > 3:
+def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None):
+    # Map Vonage event types to internal statuses
+    status = None
+    if event_type == "channel.activityrecord.v0":
+        disposition = event_data.get("interaction", {}).get("dispositionCode", "")
+        if disposition == "No Answer":
+            status = "Unreachable"
+    elif event_type == "channel.disconnected.v1":
+        status = "Logged Out"
+    elif event_type == "interaction.detailrecord.v0":
+        channels = event_data.get("interaction", {}).get("channels", [])
+        for channel in channels:
+            for event in channel.get("channelEvents", []):
+                if event.get("type") == "queue" and duration_min > 2:
+                    status = "Ready"
+                elif event.get("type") == "deliveryFailed":
+                    status = "Unreachable"
+                    break
+            if status:
+                break
+
+    if not status:
+        status = event_type  # Fallback to event_type if no mapping
+
+    if status in ["Wrap", "Outgoing Wrap Up"] and duration_min > 3:
         return True
-    elif event_type == "Ready" and duration_min > 2 and is_in_shift:
+    elif status == "Ready" and duration_min > 2 and is_in_shift:
         return True
-    elif event_type == "Lunch" and duration_min > 30:
+    elif status == "Lunch" and duration_min > 30:
         return True
-    elif event_type == "Break" and duration_min > 15:
+    elif status == "Break" and duration_min > 15:
         return True
-    elif event_type == "Comfort Break" and duration_min > 5:
+    elif status == "Comfort Break" and duration_min > 5:
         return True
-    elif event_type == "Logged Out" and is_in_shift:
+    elif status == "Logged Out" and is_in_shift:
         return True
-    elif event_type in ["Device Busy", "Unreachable"] and duration_min > 3:
+    elif status in ["Device Busy", "Unreachable"] and duration_min > 3:
         return True
-    elif event_type in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(event_type, agent, timestamp):
+    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, agent, timestamp):
         return True
-    elif event_type in ["Idle", "Away"]:
+    elif status in ["Idle", "Away"]:
         return True
     return False
 
@@ -478,7 +501,7 @@ def vonage_events():
         is_in_shift = is_within_shift(agent, timestamp)
         print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}")
 
-        if should_trigger_alert(event_type, duration_min, is_in_shift):
+        if should_trigger_alert(event_type, duration_min, is_in_shift, event_data):
             emoji = get_emoji_for_event(event_type)
             team = agent_teams.get(agent, "Unknown Team")
             interaction_link = f"https://dashboard.vonage.com/interactions/{interaction_id}"
@@ -574,149 +597,134 @@ def disposition_report():
         print(f"Error in disposition-report: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ========== SLACK INTERACTIONS ==========
+# ========== SLACK INTERACTIONS AND VIEW SUBMISSIONS ==========
 @app.route("/slack/interactions", methods=["POST"])
 def slack_interactions():
     print("Received request to /slack/interactions")
     payload = json.loads(request.form["payload"])
     print(f"Interactivity payload: {payload}")
-    action_id = payload["actions"][0]["action_id"] if payload["type"] == "block_actions" else ""
-    user = payload["user"]["username"]
-    response_url = payload["response_url"]
 
-    if action_id == "assign_to_me":
-        value = payload["actions"][0]["value"]
-        _, agent, campaign = value.split("|")
-        blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this alert for @{agent}."}},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}", "action_id": "open_followup"}
-            ]}
-        ]
-        requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+    # Handle block actions (e.g., button clicks)
+    if payload["type"] == "block_actions":
+        action_id = payload["actions"][0]["action_id"]
+        user = payload["user"]["username"]
+        response_url = payload["response_url"]
 
-    elif action_id == "open_followup":
-        value = payload["actions"][0]["value"]
-        _, agent, campaign = value.split("|")
-        trigger_id = payload["trigger_id"]
-        modal = {
-            "trigger_id": trigger_id,
-            "view": {
-                "type": "modal",
-                "callback_id": "followup_submit",
-                "title": {"type": "plain_text", "text": "Follow-Up"},
-                "submit": {"type": "plain_text", "text": "Submit"},
-                "blocks": [
-                    {"type": "input", "block_id": "monitoring", "element": {
-                        "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
-                        "options": [
-                            {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
-                            {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
-                            {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
-                            {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
-                        ],
-                        "action_id": "monitoring_method"
-                    }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
-                    {"type": "input", "block_id": "action", "element": {
-                        "type": "plain_text_input", "action_id": "action_taken",
-                        "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
-                    }, "label": {"type": "plain_text", "text": "What did you do?"}},
-                    {"type": "input", "block_id": "reason", "element": {
-                        "type": "plain_text_input", "action_id": "reason_for_issue",
-                        "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
-                    }, "label": {"type": "plain_text", "text": "Reason for issue"}},
-                    {"type": "input", "block_id": "notes", "element": {
-                        "type": "plain_text_input", "action_id": "additional_notes",
-                        "placeholder": {"type": "plain_text", "text": "Optional comments"}
-                    }, "label": {"type": "plain_text", "text": "Additional notes"}}
-                ],
-                "private_metadata": json.dumps({"agent": agent, "campaign": campaign})
+        if action_id == "assign_to_me":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign = value.split("|")
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this alert for @{agent}."}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}", "action_id": "open_followup"}
+                ]}
+            ]
+            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+
+        elif action_id == "open_followup":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign = value.split("|")
+            trigger_id = payload["trigger_id"]
+            modal = {
+                "trigger_id": trigger_id,
+                "view": {
+                    "type": "modal",
+                    "callback_id": "followup_submit",
+                    "title": {"type": "plain_text", "text": "Follow-Up"},
+                    "submit": {"type": "plain_text", "text": "Submit"},
+                    "blocks": [
+                        {"type": "input", "block_id": "monitoring", "element": {
+                            "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
+                            "options": [
+                                {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
+                                {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
+                                {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
+                                {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
+                            ],
+                            "action_id": "monitoring_method"
+                        }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
+                        {"type": "input", "block_id": "action", "element": {
+                            "type": "plain_text_input", "action_id": "action_taken",
+                            "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
+                        }, "label": {"type": "plain_text", "text": "What did you do?"}},
+                        {"type": "input", "block_id": "reason", "element": {
+                            "type": "plain_text_input", "action_id": "reason_for_issue",
+                            "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
+                        }, "label": {"type": "plain_text", "text": "Reason for issue"}},
+                        {"type": "input", "block_id": "notes", "element": {
+                            "type": "plain_text_input", "action_id": "additional_notes",
+                            "placeholder": {"type": "plain_text", "text": "Optional comments"}
+                        }, "label": {"type": "plain_text", "text": "Additional notes"}}
+                    ],
+                    "private_metadata": json.dumps({"agent": agent, "campaign": campaign})
+                }
             }
-        }
-        requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+            requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
 
-    return "", 200
-
-# ========== FOLLOW-UP MODAL SUBMISSION ==========
-@app.route("/slack/view_submission", methods=["POST"])
-def view_submission():
-    print("Received request to /slack/view_submission")
-    payload = json.loads(request.form["payload"])
-    print(f"View submission payload: {payload}")
-    if payload["type"] != "view_submission":
         return "", 200
 
-    if payload["view"]["callback_id"] == "followup_submit":
-        values = payload["view"]["state"]["values"]
-        metadata = json.loads(payload["view"]["private_metadata"])
-        agent = metadata["agent"]
-        campaign = metadata["campaign"]
-        monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
-        action = values["action"]["action_taken"]["value"]
-        reason = values["reason"]["reason_for_issue"]["value"]
-        notes = values["notes"]["additional_notes"]["value"]
-        user = payload["user"]["username"]
+    # Handle view submissions (e.g., modal submissions)
+    elif payload["type"] == "view_submission":
+        if payload["view"]["callback_id"] == "followup_submit":
+            values = payload["view"]["state"]["values"]
+            metadata = json.loads(payload["view"]["private_metadata"])
+            agent = metadata["agent"]
+            campaign = metadata["campaign"]
+            monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
+            action = values["action"]["action_taken"]["value"]
+            reason = values["reason"]["reason_for_issue"]["value"]
+            notes = values["notes"]["additional_notes"]["value"]
+            user = payload["user"]["username"]
 
-        try:
-            if sheets_service:
-                sheet_name = "FollowUps"
-                get_or_create_sheet(sheets_service, SHEET_ID, sheet_name)
-                body = {"values": [[datetime.utcnow().isoformat(), agent, campaign, monitoring, action, reason, notes, user]]}
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=SHEET_ID,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged follow-up to Google Sheet: {sheet_name}")
-        except Exception as e:
-            print(f"ERROR: Failed to log to Google Sheet: {e}")
+            try:
+                if sheets_service:
+                    sheet_name = "FollowUps"
+                    get_or_create_sheet(sheets_service, SHEET_ID, sheet_name)
+                    body = {"values": [[datetime.utcnow().isoformat(), agent, campaign, monitoring, action, reason, notes, user]]}
+                    sheets_service.spreadsheets().values().append(
+                        spreadsheetId=SHEET_ID,
+                        range=f"'{sheet_name}'!A1",
+                        valueInputOption="USER_ENTERED",
+                        body=body
+                    ).execute()
+                    print(f"Logged follow-up to Google Sheet: {sheet_name}")
+            except Exception as e:
+                print(f"ERROR: Failed to log to Google Sheet: {e}")
 
-    elif payload["view"]["callback_id"] == "weekly_submit":
-        values = payload["view"]["state"]["values"]
-        week = values["week"]["week_input"]["value"]
-        top_performers = values["top_performers"]["top_performers_input"]["value"]
-        support_actions = values["support_actions"]["support_actions_input"]["value"]
-        bottom_performers = values["bottom_performers"]["bottom_performers_input"]["value"]
-        action_plans = values["action_plans"]["action_plans_input"]["value"]
-        improvement_status = values["improvement_status"]["improvement_status_input"]["value"]
-        trends = values["trends"]["trends_input"]["value"]
-        team_progress = values["team_progress"]["team_progress_input"]["value"]
-        user = payload["user"]["username"]
+        elif payload["view"]["callback_id"] == "weekly_submit":
+            values = payload["view"]["state"]["values"]
+            week = values["week"]["week_input"]["value"]
+            top_performers = values["top_performers"]["top_performers_input"]["value"]
+            support_actions = values["support_actions"]["support_actions_input"]["value"]
+            bottom_performers = values["bottom_performers"]["bottom_performers_input"]["value"]
+            action_plans = values["action_plans"]["action_plans_input"]["value"]
+            improvement_status = values["improvement_status"]["improvement_status_input"]["value"]
+            trends = values["trends"]["trends_input"]["value"]
+            team_progress = values["team_progress"]["team_progress_input"]["value"]
+            user = payload["user"]["username"]
 
-        try:
-            if sheets_service:
-                sheet_name = f"Weekly {week}"
-                body = {
-                    "values": [[
-                        datetime.utcnow().isoformat(), f"@{user}", top_performers, support_actions,
-                        bottom_performers, action_plans, improvement_status, trends, team_progress
-                    ]]
-                }
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=SHEET_ID,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged weekly update to Google Sheet: {sheet_name}")
-        except Exception as e:
-            print(f"ERROR: Failed to log to Google Sheet: {e}")
+            try:
+                if sheets_service:
+                    sheet_name = f"Weekly {week}"
+                    body = {
+                        "values": [[
+                            datetime.utcnow().isoformat(), f"@{user}", top_performers, support_actions,
+                            bottom_performers, action_plans, improvement_status, trends, team_progress
+                        ]]
+                    }
+                    sheets_service.spreadsheets().values().append(
+                        spreadsheetId=SHEET_ID,
+                        range=f"'{sheet_name}'!A1",
+                        valueInputOption="USER_ENTERED",
+                        body=body
+                    ).execute()
+                    print(f"Logged weekly update to Google Sheet: {sheet_name}")
+            except Exception as e:
+                print(f"ERROR: Failed to log to Google Sheet: {e}")
 
-    return jsonify({"response_action": "clear"}), 200
+        return jsonify({"response_action": "clear"}), 200
 
-# Helper function to create or get sheet
-def get_or_create_sheet(service, spreadsheet_id, sheet_name):
-    try:
-        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
-        if sheet_name not in sheets:
-            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
-            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
-        return sheet_name
-    except Exception as e:
-        print(f"Error creating sheet {sheet_name}: {e}")
-        return sheet_name
+    return "", 200
 
 # ========== SLACK COMMANDS ==========
 @app.route("/slack/commands/daily_report", methods=["GET", "POST"])
