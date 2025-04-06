@@ -117,7 +117,26 @@ def get_emoji_for_event(event_type):
 
 # ========== AGENT ID TO NAME MAPPING ==========
 agent_id_to_name = {
-    "1044": "Adriana Jimenez Cartagena",
+    "10008": "Briana Roque",
+    "1064": "Carla Hagerman",
+    "1044": "Carleisha Smith",
+    "10005": "Cassandra Dunn",
+    "1033": "Crystalbell Miranda",
+    "1113": "Dajah Blackwell",
+    "1030": "Felicia Martin",
+    "1045": "Felicia Randall",
+    "1128": "Indira Gonzalez",
+    "1060": "Jason McLaughlin",
+    "1115": "Jeanette Bantz",
+    "10019": "Jesse Lorenzana Escarfullery",
+    "1003": "Jessica Lopez",
+    "1058": "Lakeira Robinson",
+    "1041": "Lyne Jean",
+    "1056": "Natalie Sukhu",
+    "1112": "Nicole Coleman",
+    "1111": "Peggy Richardson",
+    "10016": "Ramona Marshall",
+    "1057": "Rebecca Stokes",
 }
 
 # ========== SHIFT DETAILS ==========
