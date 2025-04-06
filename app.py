@@ -91,6 +91,14 @@ def get_emoji_for_event(event_type):
     }
     return emoji_map.get(event_type, "⚠️")
 
+# ========== AGENT ID TO NAME MAPPING ==========
+agent_id_to_name = {
+    "1044": "Adriana Jimenez Cartegena",
+    # Add more mappings as needed, e.g.:
+    # "1045": "Angie Rivera",
+    # "1046": "Brandon Pagan Sostre",
+}
+
 # ========== SHIFT DETAILS ==========
 agent_shifts = {
     "Adriana Jimenez Cartegena": {
@@ -417,6 +425,34 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
                     break
             if status:
                 break
+    elif event_type == "agent.presencechanged.v1":
+        presence_type = event_data.get("presence", {}).get("category", {}).get("type", "")
+        if presence_type == "ready":
+            status = "Ready"
+        elif presence_type == "logged_out":
+            status = "Logged Out"
+    elif event_type == "channel.alerted.v1":
+        status = "Ready"  # Agent is being alerted for a call
+    elif event_type == "channel.connected.v1":
+        status = "Ready"  # Agent is connected to a call
+    elif event_type == "channel.connectionfailed.v1":
+        status = "Unreachable"  # Agent failed to connect
+    elif event_type == "channel.ended.v1":
+        status = "Logged Out"  # Call ended, agent might be idle
+    elif event_type == "channel.held.v1":
+        status = "Break"  # Call on hold, agent might be on a break
+    elif event_type == "channel.interrupted.v1":
+        status = "Break"  # Call interrupted, agent might be on a break
+    elif event_type == "channel.parked.v1":
+        status = "Away"  # Call parked, agent might be away
+    elif event_type == "channel.resumed.v1":
+        status = "Ready"  # Call resumed, agent is active
+    elif event_type == "channel.retrieved.v1":
+        status = "Ready"  # Call retrieved from hold, agent is active
+    elif event_type == "channel.unparked.v1":
+        status = "Ready"  # Call unparked, agent is active
+    elif event_type == "channel.wrapstarted.v1":
+        status = "Wrap"  # Agent is in wrap-up
 
     if not status:
         status = event_type  # Fallback to event_type if no mapping
@@ -468,13 +504,21 @@ def vonage_events():
 
         # Extract agent name
         agent = None
-        if "interaction" in event_data and "channels" in event_data["interaction"]:
+        if event_type == "agent.presencechanged.v1":
+            agent_id = event_data.get("user", {}).get("agentId", None)
+            if agent_id:
+                agent = agent_id_to_name.get(agent_id, None)
+        elif "interaction" in event_data and "channels" in event_data["interaction"]:
             for channel in event_data["interaction"]["channels"]:
                 if channel.get("party", {}).get("role") == "agent":
                     agent = channel["party"].get("address", None)
                     break
         elif "channel" in event_data and "party" in event_data["channel"]:
             agent = event_data["channel"]["party"].get("address", None)
+        elif "user" in event_data:  # Fallback for events like channel.alerted.v1, channel.connected.v1
+            agent_id = event_data.get("user", {}).get("agentId", None)
+            if agent_id:
+                agent = agent_id_to_name.get(agent_id, None)
 
         if not agent:
             print("ERROR: Could not determine agent name from Vonage payload")
@@ -489,6 +533,7 @@ def vonage_events():
                     break
         elif "channel" in event_data:
             duration_ms = event_data.get("duration", 0)
+        # For presencechanged and other events, duration might not be applicable
         duration_min = parse_duration(duration_ms)
 
         # Log disposition for activityrecord events
