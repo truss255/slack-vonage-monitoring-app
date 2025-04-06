@@ -1044,4 +1044,192 @@ def slack_command_weekly_update_form():
                         "type": "multi_static_select",
                         "action_id": "bottom_performers_select",
                         "placeholder": {
-                            "type": "plain_text
+                            "type": "plain_text",
+                            "text": "Select bottom performers"
+                        },
+                        "options": employee_options
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Bottom Performers"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "bottom_actions",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "bottom_actions_input",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Describe coaching, follow-up, etc."
+                        }
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Support Actions for Bottom Performers"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "improvement_plan",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "improvement_plan_input",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Are they improving? What's the plan?"
+                        }
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Improvement Plan"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "team_momentum",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "team_momentum_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Are you rising together or are there support gaps?"
+                        }
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Team Momentum"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "trends",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "trends_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Any recurring behaviors, client feedback, or performance shifts?"
+                        }
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Trends"
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "additional_notes",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "notes_input",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Shoutouts, observations, anything else to share?"
+                        }
+                    },
+                    "label": {
+                        "type": "plain_text",
+                        "text": "Additional Notes (Optional)"
+                    }
+                }
+            ]
+        }
+    }
+    print("Opening modal for weekly update form")
+    response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+    if response.status_code != 200 or not response.json().get("ok"):
+        print(f"ERROR: Failed to open modal: {response.text}")
+    else:
+        print("Modal request sent to Slack")
+    return "", 200
+
+# ========== DAILY REPORT SCHEDULER ==========
+def trigger_daily_report():
+    print("Triggering daily report")
+    # Get yesterday's date for the report
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    report_date = yesterday.strftime("%b %d")
+    date_for_dispositions = yesterday.strftime("%Y-%m-%d")
+
+    # Get disposition summary
+    disposition_summary = generate_disposition_summary(date_for_dispositions)
+    export_link = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid=0"
+
+    # Agent performance data
+    top_performer = "@Jeanette Bantz"
+
+    # Create the report blocks
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• @Crystalbell Miranda – Wrap ❗\n• @Rebecca Stokes – Call Time ❗\n• @Carleisha Smith – Ready ❗ Not Ready ❗"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• @Jessica Lopez\n• @Jason McLaughlin"}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Performer:* {top_performer} – 0 alerts 🎯"}]},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
+        {"type": "context", "elements": [
+            {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
+        ]},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "👁️ Acknowledge"}, "value": "ack_report"}
+        ]}
+    ]
+    post_slack_message(ALERT_CHANNEL_ID, blocks)
+
+scheduler = BackgroundScheduler(timezone="US/Eastern")
+# Add the daily report job
+scheduler.add_job(trigger_daily_report, 'cron', hour=7, minute=0)
+
+# ========== WEEKLY REPORT WITH VONAGE METRICS ==========
+def generate_weekly_report():
+    print("Generating weekly report")
+    # Get the date range for the previous week
+    today = datetime.utcnow()
+    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
+    start_date = end_date - timedelta(days=6)  # Previous Monday
+    date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
+
+    # This would be where you'd fetch metrics from Vonage API
+    # For now, we'll use placeholder data
+    vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
+
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Team Performance:*\n• Team Adriana 💎: 98.5% SLA\n• Team Bee Hive 🐝: 97.2% SLA"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Download the full report with detailed metrics:*"}},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
+        ]}
+    ]
+
+    post_slack_message(ALERT_CHANNEL_ID, blocks)
+    return {"status": "weekly report posted", "date_range": date_range}
+
+# Add the weekly report job - runs every Monday at 9:00 AM Eastern
+scheduler.add_job(generate_weekly_report, 'cron', day_of_week='mon', hour=9, minute=0)
+
+# Start the scheduler
+scheduler.start()
+
+# Add a route to manually trigger the weekly report
+@app.route("/weekly-report", methods=["GET"])
+def weekly_report():
+    print("Received request to /weekly-report")
+    result = generate_weekly_report()
+    return jsonify(result), 200
+
+@app.route("/", methods=["GET"])
+def index():
+    print("Received request to /")
+    return "✅ Slack + Vonage Monitoring App is live!"
+
+# ========== RUN ==========
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
