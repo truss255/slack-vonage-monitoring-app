@@ -8,15 +8,11 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
-import hmac
-import hashlib
-import time
 
 app = Flask(__name__)
 
 # ========== ENV VARS ==========
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
 SHEET_ID = os.environ["SHEET_ID"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -392,11 +388,12 @@ def is_within_shift(agent, timestamp):
 
 # ========== DURATION PARSING ==========
 def parse_duration(duration):
-    if "min" in duration:
-        return float(duration.split()[0])
-    elif "s" in duration:
-        return float(duration.split()[0]) / 60
-    else:
+    # Duration is in milliseconds, convert to minutes
+    try:
+        duration_ms = int(duration)
+        duration_min = duration_ms / 1000 / 60  # Convert ms to minutes
+        return duration_min
+    except (ValueError, TypeError):
         return 0
 
 # ========== STATUS RULES ==========
@@ -432,38 +429,63 @@ def vonage_events():
     try:
         data = request.json
         print(f"Vonage event payload: {data}")
-        event_type = data.get("eventType", "Unknown")
 
-        # Handle disposition records
-        if event_type == "activityrecord":
-            agent = data.get("agent", {}).get("name", "Unknown")
-            timestamp_str = data.get("timestamp", datetime.utcnow().isoformat())
-            timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
-            disposition = data.get("disposition", "Unknown")
+        # Extract top-level fields
+        event_type = data.get("type", None)  # e.g., "channel.activityrecord.v0"
+        if not event_type:
+            print("ERROR: Missing event type in Vonage payload")
+            return jsonify({"status": "error", "message": "Missing event type"}), 400
 
-            # Log the disposition to Google Sheets
+        timestamp_str = data.get("time", datetime.utcnow().isoformat())
+        timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
+        interaction_id = data.get("subject", data.get("data", {}).get("interaction", {}).get("interactionId", "-"))
+
+        # Extract nested data
+        event_data = data.get("data", {})
+
+        # Extract agent name
+        agent = None
+        if "interaction" in event_data and "channels" in event_data["interaction"]:
+            for channel in event_data["interaction"]["channels"]:
+                if channel.get("party", {}).get("role") == "agent":
+                    agent = channel["party"].get("address", None)
+                    break
+        elif "channel" in event_data and "party" in event_data["channel"]:
+            agent = event_data["channel"]["party"].get("address", None)
+
+        if not agent:
+            print("ERROR: Could not determine agent name from Vonage payload")
+            return jsonify({"status": "error", "message": "Could not determine agent name"}), 400
+
+        # Extract duration (convert from milliseconds to minutes)
+        duration_ms = 0
+        if "interaction" in event_data and "channels" in event_data["interaction"]:
+            for channel in event_data["interaction"]["channels"]:
+                if channel.get("party", {}).get("role") == "agent":
+                    duration_ms = channel.get("duration", 0)
+                    break
+        elif "channel" in event_data:
+            duration_ms = event_data.get("duration", 0)
+        duration_min = parse_duration(duration_ms)
+
+        # Log disposition for activityrecord events
+        if event_type == "channel.activityrecord.v0":
+            disposition = event_data.get("interaction", {}).get("dispositionCode", "Not Specified")
             log_disposition(agent, disposition, timestamp)
             return jsonify({"status": "disposition logged"}), 200
 
-        # Handle status alerts (original functionality)
-        agent = data.get("agent", {}).get("name", "Unknown")
-        duration = data.get("duration", "N/A")
-        campaign = data.get("interactionId", "-")
-        timestamp_str = data.get("timestamp", datetime.utcnow().isoformat())
-        timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
-
-        duration_min = parse_duration(duration)
+        # Handle status alerts
         is_in_shift = is_within_shift(agent, timestamp)
-        print(f"Event: {event_type}, Duration: {duration_min}, In Shift: {is_in_shift}")
+        print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}")
 
         if should_trigger_alert(event_type, duration_min, is_in_shift):
             emoji = get_emoji_for_event(event_type)
             team = agent_teams.get(agent, "Unknown Team")
-            interaction_link = f"https://dashboard.vonage.com/interactions/{campaign}"
+            interaction_link = f"https://dashboard.vonage.com/interactions/{interaction_id}"
             blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{event_type} Alert*\nAgent: @{agent}\nTeam: {team}\nDuration: {duration}\nCampaign: {campaign}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{event_type} Alert*\nAgent: @{agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {interaction_id}"}},
                 {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{campaign}", "action_id": "assign_to_me"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}", "action_id": "assign_to_me"},
                     {"type": "button", "text": {"type": "plain_text", "text": "🔗 View Interaction"}, "url": interaction_link, "action_id": "view_interaction"}
                 ]}
             ]
@@ -552,32 +574,10 @@ def disposition_report():
         print(f"Error in disposition-report: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ========== SLACK REQUEST VERIFICATION ==========
-def verify_slack_request(request):
-    print("Verifying Slack request")
-    timestamp = request.headers.get('X-Slack-Request-Timestamp')
-    if not timestamp or abs(time.time() - int(timestamp)) > 60 * 5:
-        print(f"Verification failed: Invalid timestamp {timestamp}")
-        return False
-    sig_basestring = f"v0:{timestamp}:{request.get_data().decode('utf-8')}"
-    my_signature = 'v0=' + hmac.new(
-        SLACK_SIGNING_SECRET.encode('utf-8'),
-        sig_basestring.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    slack_signature = request.headers.get('X-Slack-Signature')
-    if not hmac.compare_digest(my_signature, slack_signature):
-        print(f"Verification failed: Signature mismatch. Expected {my_signature}, got {slack_signature}")
-        return False
-    print("Slack request verified successfully")
-    return True
-
 # ========== SLACK INTERACTIONS ==========
 @app.route("/slack/interactions", methods=["POST"])
 def slack_interactions():
     print("Received request to /slack/interactions")
-    if not verify_slack_request(request):
-        return "Invalid request", 403
     payload = json.loads(request.form["payload"])
     print(f"Interactivity payload: {payload}")
     action_id = payload["actions"][0]["action_id"] if payload["type"] == "block_actions" else ""
@@ -641,8 +641,6 @@ def slack_interactions():
 @app.route("/slack/view_submission", methods=["POST"])
 def view_submission():
     print("Received request to /slack/view_submission")
-    if not verify_slack_request(request):
-        return "Invalid request", 403
     payload = json.loads(request.form["payload"])
     print(f"View submission payload: {payload}")
     if payload["type"] != "view_submission":
@@ -729,11 +727,6 @@ def slack_command_daily_report():
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
     print(f"Slash command payload: {request.form}")
-    if not verify_slack_request(request):
-        print("Slack verification failed")
-        return "Invalid request", 403
-
-    print(f"Request form: {request.form}")
     # Generate and post a daily report
     today = datetime.utcnow()
     report_date = today.strftime("%b %d")
@@ -778,10 +771,6 @@ def slack_command_weekly_report():
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
     print(f"Slash command payload: {request.form}")
-    if not verify_slack_request(request):
-        print("Slack verification failed")
-        return "Invalid request", 403
-
     # Generate and post the weekly metrics report
     channel_id = request.form.get("channel_id")
     print(f"Posting to channel: {channel_id}")
@@ -817,10 +806,6 @@ def slack_command_weekly_update_form():
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
     print(f"Slash command payload: {request.form}")
-    if not verify_slack_request(request):
-        print("Slack verification failed")
-        return "Invalid request", 403
-
     trigger_id = request.form["trigger_id"]
     # Open the weekly update modal
     modal = {
