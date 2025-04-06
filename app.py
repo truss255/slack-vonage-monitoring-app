@@ -481,6 +481,40 @@ def is_scheduled(event_type, agent, timestamp):
     # Placeholder for scheduled event logic
     return False
 
+# ========== GOOGLE SHEETS HELPER ==========
+def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
+    try:
+        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
+        if sheet_name not in sheets:
+            # Create the sheet
+            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
+            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
+            # Add headers
+            body = {"values": [headers]}
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_name}'!A1",
+                valueInputOption="RAW",
+                body=body
+            ).execute()
+        return sheet_name
+    except Exception as e:
+        print(f"Error creating sheet {sheet_name} with headers: {e}")
+        return sheet_name
+
+def get_or_create_sheet(service, spreadsheet_id, sheet_name):
+    try:
+        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
+        if sheet_name not in sheets:
+            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
+            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
+        return sheet_name
+    except Exception as e:
+        print(f"Error creating sheet {sheet_name}: {e}")
+        return sheet_name
+
 # ========== VONAGE WEBHOOK ==========
 @app.route("/vonage-events", methods=["POST"])
 def vonage_events():
@@ -710,7 +744,11 @@ def slack_interactions():
 
     # Handle view submissions (e.g., modal submissions)
     elif payload["type"] == "view_submission":
-        if payload["view"]["callback_id"] == "followup_submit":
+        callback_id = payload["view"]["callback_id"]
+        print(f"Processing view submission with callback_id: {callback_id}")
+
+        if callback_id == "followup_submit":
+            print("Handling followup_submit")
             values = payload["view"]["state"]["values"]
             metadata = json.loads(payload["view"]["private_metadata"])
             agent = metadata["agent"]
@@ -736,7 +774,8 @@ def slack_interactions():
             except Exception as e:
                 print(f"ERROR: Failed to log to Google Sheet: {e}")
 
-        elif payload["view"]["callback_id"] == "weekly_submit":
+        elif callback_id == "weekly_submit":
+            print("Handling weekly_submit")
             values = payload["view"]["state"]["values"]
             week = values["week"]["week_input"]["value"]
             top_performers = values["top_performers"]["top_performers_input"]["value"]
@@ -748,9 +787,15 @@ def slack_interactions():
             team_progress = values["team_progress"]["team_progress_input"]["value"]
             user = payload["user"]["username"]
 
+            # Log to Google Sheets
             try:
                 if sheets_service:
                     sheet_name = f"Weekly {week}"
+                    # Ensure the sheet exists and has headers
+                    get_or_create_sheet_with_headers(sheets_service, SHEET_ID, sheet_name, [
+                        "Timestamp", "Submitted By", "Top Performers", "Support Actions",
+                        "Bottom Performers", "Action Plans", "Improvement Status", "Trends", "Team Progress"
+                    ])
                     body = {
                         "values": [[
                             datetime.utcnow().isoformat(), f"@{user}", top_performers, support_actions,
@@ -759,13 +804,21 @@ def slack_interactions():
                     }
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SHEET_ID,
-                        range=f"'{sheet_name}'!A1",
+                        range=f"'{sheet_name}'!A2",  # Start at A2 to leave room for headers
                         valueInputOption="USER_ENTERED",
                         body=body
                     ).execute()
                     print(f"Logged weekly update to Google Sheet: {sheet_name}")
             except Exception as e:
                 print(f"ERROR: Failed to log to Google Sheet: {e}")
+
+            # Post a confirmation message to the channel
+            metadata = json.loads(payload["view"]["private_metadata"])
+            channel_id = metadata["channel_id"]
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ Weekly update for *{week}* submitted successfully by @{user}!"}}
+            ]
+            post_slack_message(channel_id, blocks)
 
         return jsonify({"response_action": "clear"}), 200
 
@@ -860,6 +913,7 @@ def slack_command_weekly_update_form():
 
     print(f"Slash command payload: {request.form}")
     trigger_id = request.form["trigger_id"]
+    channel_id = request.form["channel_id"]  # Get the channel_id from the command payload
     # Open the weekly update modal
     modal = {
         "trigger_id": trigger_id,
@@ -868,6 +922,7 @@ def slack_command_weekly_update_form():
             "callback_id": "weekly_submit",
             "title": {"type": "plain_text", "text": "Weekly Update"},
             "submit": {"type": "plain_text", "text": "Submit"},
+            "private_metadata": json.dumps({"channel_id": channel_id}),  # Store channel_id
             "blocks": [
                 {
                     "type": "input",
