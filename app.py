@@ -913,214 +913,231 @@ def slack_command_weekly_update_form():
         print("Slack verification request received")
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
-    print(f"Slash command payload: {request.form}")
-    trigger_id = request.form["trigger_id"]
-    channel_id = request.form["channel_id"]  # Get the channel_id from the command payload
-    # Open the weekly update modal
-    modal = {
-        "trigger_id": trigger_id,
-        "view": {
-            "type": "modal",
-            "callback_id": "weekly_update_modal",
-            "title": {
-                "type": "plain_text",
-                "text": "Team Progress & Performance Log"
-            },
-            "submit": {
-                "type": "plain_text",
-                "text": "Submit"
-            },
-            "close": {
-                "type": "plain_text",
-                "text": "Close"
-            },
-            "private_metadata": json.dumps({"channel_id": channel_id}),  # Store channel_id
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "*Let’s capture this week’s wins, challenges, and team progress below. 👇*"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "start_date",
-                    "element": {
-                        "type": "datepicker",
-                        "action_id": "start_date_picker",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Select start date"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Start of Week"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "end_date",
-                    "element": {
-                        "type": "datepicker",
-                        "action_id": "end_date_picker",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Select end date"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "End of Week"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "top_performers",
-                    "element": {
-                        "type": "multi_static_select",
-                        "action_id": "top_performers_select",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Select top performers"
-                        },
-                        "options": employee_options
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Top Performers"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "top_support",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "top_support_input",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "How are you supporting top performers?"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Support Actions for Top Performers"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "bottom_performers",
-                    "element": {
-                        "type": "multi_static_select",
-                        "action_id": "bottom_performers_select",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Select bottom performers"
-                        },
-                        "options": employee_options
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Bottom Performers"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "bottom_actions",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "bottom_actions_input",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Describe coaching, follow-up, etc."
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Support Actions for Bottom Performers"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "improvement_plan",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "improvement_plan_input",
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Are they improving? What's the plan?"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Improvement Plan"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "team_momentum",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "team_momentum_input",
-                        "multiline": True,
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Are you rising together or are there support gaps?"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Team Momentum"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "trends",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "trends_input",
-                        "multiline": True,
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Any recurring behaviors, client feedback, or performance shifts?"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Trends"
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "additional_notes",
-                    "optional": True,
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "notes_input",
-                        "multiline": True,
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "Shoutouts, observations, anything else to share?"
-                        }
-                    },
-                    "label": {
-                        "type": "plain_text",
-                        "text": "Additional Notes (Optional)"
-                    }
-                }
-            ]
-        }
-    }
-    print("Opening modal for weekly update form")
-    response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-    if response.status_code != 200 or not response.json().get("ok"):
-        print(f"ERROR: Failed to open modal: {response.text}")
-    else:
-        print("Modal request sent to Slack")
-    return "", 200
+    try:
+        print(f"Slash command payload: {request.form}")
+        trigger_id = request.form.get("trigger_id")
+        channel_id = request.form.get("channel_id")
+        
+        if not trigger_id:
+            print("ERROR: Missing trigger_id in request.form")
+            return "Missing trigger_id", 400
+        if not channel_id:
+            print("ERROR: Missing channel_id in request.form")
+            return "Missing channel_id", 400
 
-========== DAILY REPORT SCHEDULER ==========
+        print(f"SLACK_BOT_TOKEN: {'Set' if SLACK_BOT_TOKEN else 'Not Set'}")
+        print(f"Headers: {headers}")
+
+        # Open the weekly update modal
+        modal = {
+            "trigger_id": trigger_id,
+            "view": {
+                "type": "modal",
+                "callback_id": "weekly_update_modal",
+                "title": {
+                    "type": "plain_text",
+                    "text": "Team Progress & Performance Log"
+                },
+                "submit": {
+                    "type": "plain_text",
+                    "text": "Submit"
+                },
+                "close": {
+                    "type": "plain_text",
+                    "text": "Close"
+                },
+                "private_metadata": json.dumps({"channel_id": channel_id}),
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*Let’s capture this week’s wins, challenges, and team progress below. 👇*"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "start_date",
+                        "element": {
+                            "type": "datepicker",
+                            "action_id": "start_date_picker",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select start date"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Start of Week"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "end_date",
+                        "element": {
+                            "type": "datepicker",
+                            "action_id": "end_date_picker",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select end date"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "End of Week"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "top_performers",
+                        "element": {
+                            "type": "multi_static_select",
+                            "action_id": "top_performers_select",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select top performers"
+                            },
+                            "options": employee_options
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Top Performers"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "top_support",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "top_support_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "How are you supporting top performers?"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Support Actions for Top Performers"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "bottom_performers",
+                        "element": {
+                            "type": "multi_static_select",
+                            "action_id": "bottom_performers_select",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select bottom performers"
+                            },
+                            "options": employee_options
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Bottom Performers"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "bottom_actions",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "bottom_actions_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Describe coaching, follow-up, etc."
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Support Actions for Bottom Performers"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "improvement_plan",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "improvement_plan_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Are they improving? What's the plan?"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Improvement Plan"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "team_momentum",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "team_momentum_input",
+                            "multiline": True,
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Are you rising together or are there support gaps?"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Team Momentum"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "trends",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "trends_input",
+                            "multiline": True,
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Any recurring behaviors, client feedback, or performance shifts?"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Trends"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "additional_notes",
+                        "optional": True,
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "notes_input",
+                            "multiline": True,
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Shoutouts, observations, anything else to share?"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Additional Notes (Optional)"
+                        }
+                    }
+                ]
+            }
+        }
+        print("Opening modal for weekly update form")
+        response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+        print(f"Slack API response status: {response.status_code}")
+        print(f"Slack API response: {response.text}")
+        if response.status_code != 200 or not response.json().get("ok"):
+            print(f"ERROR: Failed to open modal: {response.text}")
+        else:
+            print("Modal request sent to Slack successfully")
+        return "", 200
+    except Exception as e:
+        print(f"ERROR in /slack/commands/weekly_update_form: {e}")
+        return "Internal server error", 500
+
+# ========== DAILY REPORT SCHEDULER ==========
 def trigger_daily_report():
     print("Triggering daily report")
     # Get yesterday's date for the report
