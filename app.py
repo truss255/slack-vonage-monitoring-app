@@ -142,7 +142,7 @@ agent_id_to_name = {
 # ========== SHIFT DETAILS ==========
 agent_shifts = {
     "Briana Roque": {
-        "timezone": "Atlantic",
+        "timezone": "Canada/Atlantic",
         "shifts": {
             "Mon": ("11am", "7pm"),
             "Tue": ("11am", "7pm"),
@@ -152,7 +152,7 @@ agent_shifts = {
         }
     },
     "Carla Hagerman": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Tue": ("10am", "6pm"),
             "Wed": ("10am", "6pm"),
@@ -162,7 +162,7 @@ agent_shifts = {
         }
     },
     "Carleisha Smith": {
-        "timezone": "Central",
+        "timezone": "US/Central",
         "shifts": {
             "Thu": ("12am", "8am"),
             "Fri": ("12am", "8am"),
@@ -172,7 +172,7 @@ agent_shifts = {
         }
     },
     "Cassandra Dunn": {
-        "timezone": "Pacific",
+        "timezone": "US/Pacific",
         "shifts": {
             "Mon": ("1pm", "9pm"),
             "Tue": ("1pm", "9pm"),
@@ -182,7 +182,7 @@ agent_shifts = {
         }
     },
     "Crystalbell Miranda": {
-        "timezone": "Pacific",
+        "timezone": "US/Pacific",
         "shifts": {
             "Tue": ("12pm", "8pm"),
             "Wed": ("12pm", "8pm"),
@@ -192,7 +192,7 @@ agent_shifts = {
         }
     },
     "Dajah Blackwell": {
-        "timezone": "Central",
+        "timezone": "US/Central",
         "shifts": {
             "Sun": ("10am", "6pm"),
             "Mon": ("10am", "6pm"),
@@ -202,7 +202,7 @@ agent_shifts = {
         }
     },
     "Felicia Martin": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Mon": ("8am", "4pm"),
             "Tue": ("8am", "4pm"),
@@ -212,7 +212,7 @@ agent_shifts = {
         }
     },
     "Felicia Randall": {
-        "timezone": "Atlantic",
+        "timezone": "Canada/Atlantic",
         "shifts": {
             "Tue": ("11am", "7pm"),
             "Wed": ("11am", "7pm"),
@@ -222,7 +222,7 @@ agent_shifts = {
         }
     },
     "Indira Gonzalez": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Tue": ("2pm", "10pm"),
             "Wed": ("2pm", "10pm"),
@@ -232,7 +232,7 @@ agent_shifts = {
         }
     },
     "Jason McLaughlin": {
-        "timezone": "Central",
+        "timezone": "US/Central",
         "shifts": {
             "Sun": ("8am", "4pm"),
             "Mon": ("8am", "4pm"),
@@ -242,7 +242,7 @@ agent_shifts = {
         }
     },
     "Jeanette Bantz": {
-        "timezone": "Central",
+        "timezone": "US/Central",
         "shifts": {
             "Tue": ("9am", "5pm"),
             "Wed": ("9am", "5pm"),
@@ -252,7 +252,7 @@ agent_shifts = {
         }
     },
     "Jesse Lorenzana Escarfullery": {
-        "timezone": "Atlantic",
+        "timezone": "Canada/Atlantic",
         "shifts": {
             "Mon": ("11am", "7pm"),
             "Tue": ("11am", "7pm"),
@@ -262,7 +262,7 @@ agent_shifts = {
         }
     },
     "Jessica Lopez": {
-        "timezone": "Atlantic",
+        "timezone": "Canada/Atlantic",
         "shifts": {
             "Mon": ("12am", "8am"),
             "Tue": ("12am", "8am"),
@@ -272,7 +272,7 @@ agent_shifts = {
         }
     },
     "Lakeira Robinson": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Sun": ("10am", "6pm"),
             "Mon": ("10am", "6pm"),
@@ -282,7 +282,7 @@ agent_shifts = {
         }
     },
     "Lyne Jean": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Sun": ("8am", "4pm"),
             "Mon": ("8am", "4pm"),
@@ -292,7 +292,7 @@ agent_shifts = {
         }
     },
     "Natalie Sukhu": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Tue": ("2pm", "10pm"),
             "Wed": ("2pm", "10pm"),
@@ -302,7 +302,7 @@ agent_shifts = {
         }
     },
     "Nicole Coleman": {
-        "timezone": "Pacific",
+        "timezone": "US/Pacific",
         "shifts": {
             "Tue": ("10am", "6pm"),
             "Wed": ("10am", "6pm"),
@@ -312,7 +312,7 @@ agent_shifts = {
         }
     },
     "Peggy Richardson": {
-        "timezone": "Pacific",
+        "timezone": "US/Pacific",
         "shifts": {
             "Sun": ("10am", "6pm"),
             "Mon": ("10am", "6pm"),
@@ -322,7 +322,7 @@ agent_shifts = {
         }
     },
     "Ramona Marshall": {
-        "timezone": "Eastern",
+        "timezone": "US/Eastern",
         "shifts": {
             "Mon": ("8am", "4pm"),
             "Tue": ("8am", "4pm"),
@@ -332,7 +332,7 @@ agent_shifts = {
         }
     },
     "Rebecca Stokes": {
-        "timezone": "Central",
+        "timezone": "US/Central",
         "shifts": {
             "Sun": ("4pm", "12am"),
             "Mon": ("4pm", "12am"),
@@ -372,7 +372,11 @@ def is_within_shift(agent, timestamp):
     if not agent_data:
         print(f"WARNING: Agent {agent} not found in shift data")
         return False
-    tz = pytz.timezone(agent_data["timezone"])
+    try:
+        tz = pytz.timezone(agent_data["timezone"])
+    except pytz.exceptions.UnknownTimeZoneError as e:
+        print(f"ERROR: Invalid timezone for agent {agent}: {agent_data['timezone']}. Error: {e}")
+        return False
     local_time = timestamp.astimezone(tz)
     day = local_time.strftime("%a")
     shift = agent_data["shifts"].get(day)
@@ -1116,7 +1120,7 @@ def slack_command_weekly_update_form():
         print("Modal request sent to Slack")
     return "", 200
 
-# ========== DAILY REPORT SCHEDULER ==========
+========== DAILY REPORT SCHEDULER ==========
 def trigger_daily_report():
     print("Triggering daily report")
     # Get yesterday's date for the report
