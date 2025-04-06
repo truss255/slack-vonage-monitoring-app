@@ -1008,8 +1008,11 @@ def slack_command_weekly_update_form():
         }
     }
     print("Opening modal for weekly update form")
-    requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-    print("Modal request sent to Slack")
+    response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+    if response.status_code != 200 or not response.json().get("ok"):
+        print(f"ERROR: Failed to open modal: {response.text}")
+    else:
+        print("Modal request sent to Slack")
     return "", 200
 
 # ========== DAILY REPORT SCHEDULER ==========
