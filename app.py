@@ -15,7 +15,7 @@ app = Flask(__name__)
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
 SHEET_ID = os.environ["SHEET_ID"]
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = json.loads(os.environ.get("GOOGLE_SHEETS_SCOPES", '["https://www.googleapis.com/auth/spreadsheets"]'))
 
 # Handle Google service account JSON
 GOOGLE_SERVICE_ACCOUNT_JSON = None
