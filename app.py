@@ -699,172 +699,191 @@ def get_or_create_sheet(service, spreadsheet_id, sheet_name):
         return sheet_name
 
 # ========== SLACK COMMANDS ==========
-@app.route("/slack/command", methods=["POST"])
-def slack_command():
+@app.route('/slack/commands/daily_report', methods=['POST'])
+def daily_report():
+    # Verify the request is coming from Slack
     if not verify_slack_request(request):
         return "Invalid request", 403
 
-    # Extract the command that was used
-    command = request.form.get("command", "")
-    trigger_id = request.form["trigger_id"]
+    # Process the command
+    today = datetime.utcnow()
+    report_date = today.strftime("%b %d")
+    date_for_dispositions = today.strftime("%Y-%m-%d")
 
-    # Handle different commands
-    if command == "/weekly_update_form":
-        # Open the weekly update modal
-        modal = {
-            "trigger_id": trigger_id,
-            "view": {
-                "type": "modal",
-                "callback_id": "weekly_submit",
-                "title": {"type": "plain_text", "text": "Weekly Update"},
-                "submit": {"type": "plain_text", "text": "Submit"},
-                "blocks": [
-                    {
-                        "type": "input",
-                        "block_id": "week",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "week_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Apr 7–Apr 13"}
-                        },
-                        "label": {"type": "plain_text", "text": "Week Covered"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "top_performers",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "top_performers_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Jessica Lopez, Jason McLaughlin"}
-                        },
-                        "label": {"type": "plain_text", "text": "Who are your top performers?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "support_actions",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "support_actions_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Recognition, additional training"}
-                        },
-                        "label": {"type": "plain_text", "text": "What are you doing to support them?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "bottom_performers",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "bottom_performers_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Crystalbell Miranda, Rebecca Stokes"}
-                        },
-                        "label": {"type": "plain_text", "text": "Who are your bottom performers?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "action_plans",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "action_plans_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Coaching, performance review"}
-                        },
-                        "label": {"type": "plain_text", "text": "What actions are being taken?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "improvement_status",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "improvement_status_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Yes, No, Plan to improve"}
-                        },
-                        "label": {"type": "plain_text", "text": "Are they improving? If not, what’s the plan?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "trends",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "trends_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Increased call times, better wrap-up"}
-                        },
-                        "label": {"type": "plain_text", "text": "What trends are you noticing?"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "team_progress",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "team_progress_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Yes, No, Areas for improvement"}
-                        },
-                        "label": {"type": "plain_text", "text": "Are we rising as a team?"}
-                    }
-                ]
-            }
-        }
-        requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-    elif command == "/daily_report":
-        # Generate and post a daily report
-        today = datetime.utcnow()
+    # Check if "yesterday" was specified in the command text
+    text = request.form.get("text", "").strip()
+    if text.lower() == "yesterday":
+        today = today - timedelta(days=1)
         report_date = today.strftime("%b %d")
         date_for_dispositions = today.strftime("%Y-%m-%d")
 
-        # Get disposition summary for today (or yesterday if specified)
-        text = request.form.get("text", "").strip()
-        if text.lower() == "yesterday":
-            today = today - timedelta(days=1)
-            report_date = today.strftime("%b %d")
-            date_for_dispositions = today.strftime("%Y-%m-%d")
+    # Generate disposition summary
+    disposition_summary = generate_disposition_summary(date_for_dispositions)
+    export_link = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid=0"
+    top_performer = "@Jeanette Bantz"
+    
+    # Build the Slack message blocks
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• @Crystalbell Miranda – Wrap ❗\n• @Rebecca Stokes – Call Time ❗\n• @Carleisha Smith – Ready ❗ Not Ready ❗"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• @Jessica Lopez\n• @Jason McLaughlin"}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Performer:* {top_performer} – 0 alerts 🎯"}]},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
+        {"type": "context", "elements": [
+            {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
+        ]},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "👁️ Acknowledge"}, "value": "ack_report"}
+        ]}
+    ]
+    
+    # Post the report to the channel where the command was used
+    channel_id = request.form.get("channel_id")
+    post_slack_message(channel_id, blocks)
+    
+    # Return a response to Slack (empty string as the message is posted separately)
+    return "", 200
 
-        disposition_summary = generate_disposition_summary(date_for_dispositions)
-        export_link = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid=0"
+@app.route('/slack/commands/weekly_report', methods=['POST'])
+def weekly_report():
+    # Verify the request is coming from Slack
+    if not verify_slack_request(request):
+        return "Invalid request", 403
 
-        top_performer = "@Jeanette Bantz"
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• @Crystalbell Miranda – Wrap ❗\n• @Rebecca Stokes – Call Time ❗\n• @Carleisha Smith – Ready ❗ Not Ready ❗"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• @Jessica Lopez\n• @Jason McLaughlin"}},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Performer:* {top_performer} – 0 alerts 🎯"}]},
-            {"type": "divider"},
-            {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
-            {"type": "context", "elements": [
-                {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
-            ]},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "👁️ Acknowledge"}, "value": "ack_report"}
-            ]}
-        ]
-        # Post the report to the channel where the command was used
-        channel_id = request.form.get("channel_id")
-        post_slack_message(channel_id, blocks)
-    elif command == "/weekly_report":
-        # Generate and post the weekly metrics report
-        channel_id = request.form.get("channel_id")
+    # Process the command
+    today = datetime.utcnow()
+    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
+    start_date = end_date - timedelta(days=6)  # Previous Monday
+    date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
+    
+    # Placeholder for Vonage API metrics
+    vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
+    
+    # Build the Slack message blocks
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Team Performance:*\n• Team Adriana 💎: 98.5% SLA\n• Team Bee Hive 🐝: 97.2% SLA"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Download the full report with detailed metrics:*"}},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
+        ]}
+    ]
+    
+    # Post the report to the channel where the command was used
+    channel_id = request.form.get("channel_id")
+    post_slack_message(channel_id, blocks)
+    
+    # Return a response to Slack
+    return "", 200
 
-        # Get the date range for the previous week
-        today = datetime.utcnow()
-        end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
-        start_date = end_date - timedelta(days=6)  # Previous Monday
-        date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
+@app.route('/slack/commands/weekly_update_form', methods=['POST'])
+def weekly_update_form():
+    # Verify the request is coming from Slack
+    if not verify_slack_request(request):
+        return "Invalid request", 403
 
-        # This would be where you'd fetch metrics from Vonage API
-        vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
-
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Team Performance:*\n• Team Adriana 💎: 98.5% SLA\n• Team Bee Hive 🐝: 97.2% SLA"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Download the full report with detailed metrics:*"}},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
-            ]}
-        ]
-
-        post_slack_message(channel_id, blocks)
-    else:
-        # Unknown command
-        return f"Unknown command: {command}", 200
-
+    # Process the command
+    trigger_id = request.form["trigger_id"]
+    
+    # Build and open the modal
+    modal = {
+        "trigger_id": trigger_id,
+        "view": {
+            "type": "modal",
+            "callback_id": "weekly_submit",
+            "title": {"type": "plain_text", "text": "Weekly Update"},
+            "submit": {"type": "plain_text", "text": "Submit"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "week",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "week_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Apr 7–Apr 13"}
+                    },
+                    "label": {"type": "plain_text", "text": "Week Covered"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "top_performers",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "top_performers_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Jessica Lopez, Jason McLaughlin"}
+                    },
+                    "label": {"type": "plain_text", "text": "Who are your top performers?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "support_actions",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "support_actions_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Recognition, additional training"}
+                    },
+                    "label": {"type": "plain_text", "text": "What are you doing to support them?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "bottom_performers",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "bottom_performers_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Crystalbell Miranda, Rebecca Stokes"}
+                    },
+                    "label": {"type": "plain_text", "text": "Who are your bottom performers?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "action_plans",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "action_plans_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Coaching, performance review"}
+                    },
+                    "label": {"type": "plain_text", "text": "What actions are being taken?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "improvement_status",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "improvement_status_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Yes, No, Plan to improve"}
+                    },
+                    "label": {"type": "plain_text", "text": "Are they improving? If not, what’s the plan?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "trends",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "trends_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Increased call times, better wrap-up"}
+                    },
+                    "label": {"type": "plain_text", "text": "What trends are you noticing?"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "team_progress",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "team_progress_input",
+                        "placeholder": {"type": "plain_text", "text": "e.g. Yes, No, Areas for improvement"}
+                    },
+                    "label": {"type": "plain_text", "text": "Are we rising as a team?"}
+                }
+            ]
+        }
+    }
+    
+    # Send the modal to Slack
+    requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+    
+    # Return a response to Slack
     return "", 200
 
 # ========== DAILY REPORT SCHEDULER ==========
@@ -935,7 +954,7 @@ scheduler.start()
 
 # Add a route to manually trigger the weekly report
 @app.route("/weekly-report", methods=["GET"])
-def weekly_report():
+def weekly_report_manual():
     result = generate_weekly_report()
     return jsonify(result), 200
 
@@ -944,12 +963,5 @@ def index():
     return "✅ Slack + Vonage Monitoring App is live!"
 
 # ========== RUN ==========
-from flask import Flask
-app = Flask(__name__)
-
-@app.route('/')
-def hello():
-    return "Hello from Railway!"
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
