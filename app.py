@@ -90,6 +90,13 @@ def get_emoji_for_event(event_type):
     }
     return emoji_map.get(event_type, "⚠️")
 
+def normalize_agent_name(agent):
+    if not agent:
+        print("Error: No agent name provided")
+        return None
+    # Normalize: strip spaces, title case
+    return agent.strip().title()
+
 # ========== SHIFT DETAILS ==========
 agent_shifts = {
     "Adriana Jimenez Cartegena": {
@@ -425,21 +432,26 @@ def is_scheduled(event_type, agent, timestamp):
 def vonage_events():
     try:
         data = request.json
+        print(f"Received Vonage event: {data}")  # Log the full payload for debugging
         event_type = data.get("eventType", "Unknown")
+
+        # Extract and normalize agent name
+        agent = normalize_agent_name(data.get("agent", {}).get("name"))
+        if not agent:
+            print("Rejecting event: No valid agent name provided")
+            return jsonify({"status": "error", "reason": "missing or invalid agent name"}), 400
 
         # Handle disposition records
         if event_type == "activityrecord":
-            agent = data.get("agent", {}).get("name", "Unknown")
+            print(f"Disposition event - Agent: {agent}")
             timestamp_str = data.get("timestamp", datetime.utcnow().isoformat())
             timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
             disposition = data.get("disposition", "Unknown")
-
-            # Log the disposition to Google Sheets
             log_disposition(agent, disposition, timestamp)
             return jsonify({"status": "disposition logged"}), 200
 
-        # Handle status alerts (original functionality)
-        agent = data.get("agent", {}).get("name", "Unknown")
+        # Handle status alerts
+        print(f"Status event - Agent: {agent}")
         duration = data.get("duration", "N/A")
         campaign = data.get("interactionId", "-")
         timestamp_str = data.get("timestamp", datetime.utcnow().isoformat())
@@ -447,11 +459,13 @@ def vonage_events():
 
         duration_min = parse_duration(duration)
         is_in_shift = is_within_shift(agent, timestamp)
+        if not is_in_shift and agent not in agent_shifts:
+            print(f"Warning: Agent '{agent}' not found in shift data - check name formatting")
 
         if should_trigger_alert(event_type, duration_min, is_in_shift):
             emoji = get_emoji_for_event(event_type)
             team = agent_teams.get(agent, "Unknown Team")
-            interaction_link = f"https://dashboard.vonage.com/interactions/{campaign}"  # Replace with actual Vonage URL
+            interaction_link = f"https://dashboard.vonage.com/interactions/{campaign}"
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{event_type} Alert*\nAgent: @{agent}\nTeam: {team}\nDuration: {duration}\nCampaign: {campaign}"}},
                 {"type": "actions", "elements": [
@@ -701,28 +715,23 @@ def get_or_create_sheet(service, spreadsheet_id, sheet_name):
 # ========== SLACK COMMANDS ==========
 @app.route('/slack/commands/daily_report', methods=['POST'])
 def daily_report():
-    # Verify the request is coming from Slack
     if not verify_slack_request(request):
         return "Invalid request", 403
 
-    # Process the command
     today = datetime.utcnow()
     report_date = today.strftime("%b %d")
     date_for_dispositions = today.strftime("%Y-%m-%d")
 
-    # Check if "yesterday" was specified in the command text
     text = request.form.get("text", "").strip()
     if text.lower() == "yesterday":
         today = today - timedelta(days=1)
         report_date = today.strftime("%b %d")
         date_for_dispositions = today.strftime("%Y-%m-%d")
 
-    # Generate disposition summary
     disposition_summary = generate_disposition_summary(date_for_dispositions)
     export_link = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid=0"
     top_performer = "@Jeanette Bantz"
     
-    # Build the Slack message blocks
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• @Crystalbell Miranda – Wrap ❗\n• @Rebecca Stokes – Call Time ❗\n• @Carleisha Smith – Ready ❗ Not Ready ❗"}},
@@ -738,29 +747,22 @@ def daily_report():
         ]}
     ]
     
-    # Post the report to the channel where the command was used
     channel_id = request.form.get("channel_id")
     post_slack_message(channel_id, blocks)
-    
-    # Return a response to Slack (empty string as the message is posted separately)
     return "", 200
 
 @app.route('/slack/commands/weekly_report', methods=['POST'])
 def weekly_report():
-    # Verify the request is coming from Slack
     if not verify_slack_request(request):
         return "Invalid request", 403
 
-    # Process the command
     today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
-    start_date = end_date - timedelta(days=6)  # Previous Monday
+    end_date = today - timedelta(days=today.weekday() + 1)
+    start_date = end_date - timedelta(days=6)
     date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
     
-    # Placeholder for Vonage API metrics
     vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
     
-    # Build the Slack message blocks
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
@@ -771,23 +773,17 @@ def weekly_report():
         ]}
     ]
     
-    # Post the report to the channel where the command was used
     channel_id = request.form.get("channel_id")
     post_slack_message(channel_id, blocks)
-    
-    # Return a response to Slack
     return "", 200
 
 @app.route('/slack/commands/weekly_update_form', methods=['POST'])
 def weekly_update_form():
-    # Verify the request is coming from Slack
     if not verify_slack_request(request):
         return "Invalid request", 403
 
-    # Process the command
     trigger_id = request.form["trigger_id"]
     
-    # Build and open the modal
     modal = {
         "trigger_id": trigger_id,
         "view": {
@@ -880,27 +876,19 @@ def weekly_update_form():
         }
     }
     
-    # Send the modal to Slack
     requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-    
-    # Return a response to Slack
     return "", 200
 
 # ========== DAILY REPORT SCHEDULER ==========
 def trigger_daily_report():
-    # Get yesterday's date for the report
     yesterday = datetime.utcnow() - timedelta(days=1)
     report_date = yesterday.strftime("%b %d")
     date_for_dispositions = yesterday.strftime("%Y-%m-%d")
 
-    # Get disposition summary
     disposition_summary = generate_disposition_summary(date_for_dispositions)
     export_link = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid=0"
-
-    # Agent performance data
     top_performer = "@Jeanette Bantz"
 
-    # Create the report blocks
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• @Crystalbell Miranda – Wrap ❗\n• @Rebecca Stokes – Call Time ❗\n• @Carleisha Smith – Ready ❗ Not Ready ❗"}},
@@ -918,21 +906,16 @@ def trigger_daily_report():
     post_slack_message(ALERT_CHANNEL_ID, blocks)
 
 scheduler = BackgroundScheduler(timezone="US/Eastern")
-# Add the daily report job
 scheduler.add_job(trigger_daily_report, 'cron', hour=7, minute=0)
 
 # ========== WEEKLY REPORT WITH VONAGE METRICS ==========
 def generate_weekly_report():
-    # Get the date range for the previous week
     today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
-    start_date = end_date - timedelta(days=6)  # Previous Monday
+    end_date = today - timedelta(days=today.weekday() + 1)
+    start_date = end_date - timedelta(days=6)
     date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
 
-    # This would be where you'd fetch metrics from Vonage API
-    # For now, we'll use placeholder data
     vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
-
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
@@ -942,17 +925,12 @@ def generate_weekly_report():
             {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
         ]}
     ]
-
     post_slack_message(ALERT_CHANNEL_ID, blocks)
     return {"status": "weekly report posted", "date_range": date_range}
 
-# Add the weekly report job - runs every Monday at 9:00 AM Eastern
 scheduler.add_job(generate_weekly_report, 'cron', day_of_week='mon', hour=9, minute=0)
-
-# Start the scheduler
 scheduler.start()
 
-# Add a route to manually trigger the weekly report
 @app.route("/weekly-report", methods=["GET"])
 def weekly_report_manual():
     result = generate_weekly_report()
