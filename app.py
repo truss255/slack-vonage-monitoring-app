@@ -156,7 +156,7 @@ def get_emoji_for_event(event_type):
         "Outgoing Wrap Up": "📝",
         "Ready": "📞",
         "Ready Outbound": "📤",
-        "Handle Time": "📞",
+        "Busy": "💻",  # Updated from "Handle Time"
         "Lunch": "🍽️",
         "Break": "☕",
         "Comfort Break": "🚻",
@@ -398,7 +398,7 @@ agent_shifts = {
     }
 }
 
-# Agent teams
+# Agent teams - Jessica Lopez moved to Team Adriana
 agent_teams = {
     "Carla Hagerman": "Team Adriana 💎",
     "Dajah Blackwell": "Team Adriana 💎",
@@ -406,6 +406,7 @@ agent_teams = {
     "Felicia Randall": "Team Adriana 💎",
     "Jeanette Bantz": "Team Adriana 💎",
     "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
+    "Jessica Lopez": "Team Adriana 💎",  # Moved from Team Bee Hive
     "Nicole Coleman": "Team Adriana 💎",
     "Peggy Richardson": "Team Adriana 💎",
     "Ramona Marshall": "Team Adriana 💎",
@@ -467,7 +468,7 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
                 elif event.get("type") == "connected":
                     connected_duration = parse_duration(event.get("duration", 0))
                     if connected_duration > 8:
-                        status = "Handle Time"
+                        status = "Busy"  # Updated from "Handle Time"
                 if status:
                     break
             if status:
@@ -502,7 +503,7 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
     elif event_type == "channel.alerted.v1":
         status = "Ready"
     elif event_type == "channel.connected.v1":
-        status = "Ready"
+        status = "Busy"  # Updated from "Ready"
     elif event_type == "channel.connectionfailed.v1":
         status = "Device Busy"
     elif event_type == "channel.ended.v1":
@@ -528,11 +529,12 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
     event_data["alert_status"] = status
     event_data["alert_duration_min"] = duration_min
 
+    # Updated trigger conditions based on your table
     if status in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
         return True
     elif status in ["Ready", "Ready Outbound"] and duration_min > 2 and is_in_shift:
         return True
-    elif status == "Handle Time":
+    elif status == "Busy" and duration_min > 8:  # Updated from "Handle Time"
         return True
     elif status == "Lunch" and duration_min > 30:
         return True
@@ -542,9 +544,11 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         return True
     elif status == "Logged Out" and is_in_shift:
         return True
-    elif status in ["Device Busy", "Away"]:
+    elif status == "Device Busy":
         return True
-    elif status == "Idle" and duration_min >= 22:
+    elif status == "Idle" and duration_min > 1:  # Updated to > 1 min
+        return True
+    elif status == "Away":
         return True
     elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, event_data.get("agent"), event_data.get("timestamp")):
         return True
@@ -680,31 +684,30 @@ def vonage_events():
             duration_min = event_data.get("alert_duration_min", duration_min)
             emoji = get_emoji_for_event(status)
             team = agent_teams.get(agent, "Unknown Team")
-            search_link = "https://nam.newvoicemedia.com/interaction-search"
-            states_without_interaction = ["Lunch", "Break", "Comfort Break", "Logged Out", "Training", "In Meeting", "Paperwork", "Idle", "Away", "Ready", "Ready Outbound"]
-
-            buttons = [
-                {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
-            ]
-            if status not in states_without_interaction and interaction_id != "-":
-                buttons.extend([
-                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
-                    {"type": "button", "text": {"type": "plain_text", "text": "🔍 Interaction Search"}, "url": search_link, "action_id": "interaction_search"}
-                ])
-            else:
-                buttons.append(
-                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"}
-                )
+            vonage_link = "https://nam.newvoicemedia.com/CallCentre/portal/interactionsearch"
+            states_without_interaction = ["Ready", "Ready Outbound", "Lunch", "Break", "Comfort Break", "Logged Out", "Idle", "Away", "Training", "In Meeting", "Paperwork"]
 
             if status in ["Training", "In Meeting", "Paperwork"]:
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
                     {"type": "actions", "elements": [
                         {"type": "button", "text": {"type": "plain_text", "text": "✅ Approved by Management"}, "value": f"approve|{agent}|{interaction_id}|{status}", "action_id": "approve_event"},
                         {"type": "button", "text": {"type": "plain_text", "text": "❌ Not Approved"}, "value": f"not_approve|{agent}|{interaction_id}|{status}", "action_id": "not_approve_event"}
                     ]}
                 ]
+            elif status in states_without_interaction:
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
+                    {"type": "actions", "elements": [
+                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
+                    ]}
+                ]
             else:
+                buttons = [
+                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "🔗 Vonage"}, "url": vonage_link, "action_id": "vonage_link"}
+                ]
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
                     {"type": "actions", "elements": buttons}
@@ -1195,7 +1198,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "top_support_input",
-                            "multiline": True,  # Changed to multi-line
+                            "multiline": True,
                             "placeholder": {"type": "plain_text", "text": "How are you supporting top performers?"}
                         },
                         "label": {"type": "plain_text", "text": "Support Actions for Top Performers"}
@@ -1217,7 +1220,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "bottom_actions_input",
-                            "multiline": True,  # Changed to multi-line
+                            "multiline": True,
                             "placeholder": {"type": "plain_text", "text": "Describe coaching, follow-up, etc."}
                         },
                         "label": {"type": "plain_text", "text": "Support Actions for Bottom Performers"}
@@ -1228,7 +1231,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "improvement_plan_input",
-                            "multiline": True,  # Changed to multi-line
+                            "multiline": True,
                             "placeholder": {"type": "plain_text", "text": "Are they improving? What's the plan?"}
                         },
                         "label": {"type": "plain_text", "text": "Improvement Plan"}
