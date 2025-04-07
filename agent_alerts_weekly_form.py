@@ -7,8 +7,6 @@ from dateutil.parser import parse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
-from collections import defaultdict
 
 app = Flask(__name__)
 
@@ -17,21 +15,15 @@ SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
 SCOPES = json.loads(os.environ.get("GOOGLE_SHEETS_SCOPES", '["https://www.googleapis.com/auth/spreadsheets"]'))
 
-# Map years to spreadsheet IDs for dispositions
-DISPOSITION_SPREADSHEET_IDS = {
-    2025: os.environ["DISPOSITION_SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
-}
-
-# Map years to spreadsheet IDs for follow-ups
-FOLLOWUP_SPREADSHEET_IDS = {
-    2025: os.environ["FOLLOWUP_SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
-}
-
 # Map years to spreadsheet IDs for weekly updates
 WEEKLY_UPDATE_SPREADSHEET_IDS = {
     2025: os.environ["WEEKLY_UPDATE_SHEET_ID"],
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
+}
+
+# Map years to spreadsheet IDs for follow-ups (used for both real-time alerts and follow-up submissions)
+FOLLOWUP_SPREADSHEET_IDS = {
+    2025: os.environ["FOLLOWUP_SHEET_ID"],
     2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
 }
 
@@ -60,24 +52,21 @@ if not GOOGLE_SERVICE_ACCOUNT_JSON or not isinstance(GOOGLE_SERVICE_ACCOUNT_JSON
 
 # Dictionary to store sheets_service instances for each year and type
 sheets_services = {
-    "disposition": {},
-    "followup": {},
-    "weekly_update": {}
+    "weekly_update": {},
+    "followup": {}
 }
 
-def get_sheets_service(year, sheet_type="disposition"):
+def get_sheets_service(year, sheet_type="followup"):
     """Get or create a sheets_service instance for the given year and sheet type."""
     if sheet_type not in sheets_services:
         print(f"ERROR: Invalid sheet type {sheet_type}")
         return None
 
     if year not in sheets_services[sheet_type]:
-        if sheet_type == "disposition":
-            spreadsheet_id = DISPOSITION_SPREADSHEET_IDS.get(year)
+        if sheet_type == "weekly_update":
+            spreadsheet_id = WEEKLY_UPDATE_SPREADSHEET_IDS.get(year)
         elif sheet_type == "followup":
             spreadsheet_id = FOLLOWUP_SPREADSHEET_IDS.get(year)
-        elif sheet_type == "weekly_update":
-            spreadsheet_id = WEEKLY_UPDATE_SPREADSHEET_IDS.get(year)
         else:
             print(f"ERROR: Unknown sheet type {sheet_type}")
             return None
@@ -103,6 +92,18 @@ headers = {
     "Content-Type": "application/json"
 }
 
+def post_slack_message(channel, blocks, thread_ts=None):
+    print(f"Attempting to post to Slack channel: {channel}")
+    payload = {"channel": channel, "blocks": blocks}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+    if response.status_code != 200:
+        print(f"Failed to post to Slack: {response.status_code} - {response.text}")
+    else:
+        print("Successfully posted to Slack")
+    return response.json().get("ts")
+
 # ========== EMPLOYEE OPTIONS FOR MULTI-SELECT ==========
 employee_options = [
     {"text": {"type": "plain_text", "text": "Briana Roque"}, "value": "briana_roque"},
@@ -127,6 +128,54 @@ employee_options = [
     {"text": {"type": "plain_text", "text": "Rebecca Stokes"}, "value": "rebecca_stokes"},
     {"text": {"type": "plain_text", "text": "Tanya Russell"}, "value": "tanya_russell"}
 ]
+
+# ========== AGENT ID TO NAME MAPPING ==========
+agent_id_to_name = {
+    "10008": "Briana Roque",
+    "1064": "Carla Hagerman",
+    "1044": "Carleisha Smith",
+    "10005": "Cassandra Dunn",
+    "1033": "Crystalbell Miranda",
+    "1113": "Dajah Blackwell",
+    "1030": "Felicia Martin",
+    "1045": "Felicia Randall",
+    "1128": "Indira Gonzalez",
+    "1060": "Jason McLaughlin",
+    "1115": "Jeanette Bantz",
+    "10019": "Jesse Lorenzana Escarfullery",
+    "1003": "Jessica Lopez",
+    "1058": "Lakeira Robinson",
+    "1041": "Lyne Jean",
+    "1056": "Natalie Sukhu",
+    "1112": "Nicole Coleman",
+    "1111": "Peggy Richardson",
+    "10016": "Ramona Marshall",
+    "1057": "Rebecca Stokes",
+}
+
+# Agent teams - Jessica Lopez moved to Team Adriana
+agent_teams = {
+    "Carla Hagerman": "Team Adriana 💎",
+    "Dajah Blackwell": "Team Adriana 💎",
+    "Felicia Martin": "Team Adriana 💎",
+    "Felicia Randall": "Team Adriana 💎",
+    "Jeanette Bantz": "Team Adriana 💎",
+    "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
+    "Jessica Lopez": "Team Adriana 💎",  # Moved from "Team Bee Hive 🐝"
+    "Nicole Coleman": "Team Adriana 💎",
+    "Peggy Richardson": "Team Adriana 💎",
+    "Ramona Marshall": "Team Adriana 💎",
+    "Lyne Jean": "Team Bee Hive 🐝",
+    "Crystalbell Miranda": "Team Bee Hive 🐝",
+    "Cassandra Dunn": "Team Bee Hive 🐝",
+    "Briana Roque": "Team Bee Hive 🐝",
+    "Natalie Sukhu": "Team Bee Hive 🐝",
+    "Rebecca Stokes": "Team Bee Hive 🐝",
+    "Jason McLaughlin": "Team Bee Hive 🐝",
+    "Indira Gonzalez": "Team Bee Hive 🐝",
+    "Carleisha Smith": "Team Bee Hive 🐝",
+    "Lakeira Robinson": "Team Bee Hive 🐝"
+}
 
 # Updated Campaign mapping dictionary
 CAMPAIGN_MAPPING = {
@@ -155,72 +204,6 @@ def get_campaign_from_number(phone_number):
         if normalized_number == key.lstrip("+") or phone_number == key:
             return campaign
     return "Unknown Campaign"
-
-def post_slack_message(channel, blocks):
-    print(f"Attempting to post to Slack channel: {channel}")
-    payload = {"channel": channel, "blocks": blocks}
-    response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-    if response.status_code != 200:
-        print(f"Failed to post to Slack: {response.status_code} - {response.text}")
-    else:
-        print("Successfully posted to Slack")
-
-# ========== UTILITY FUNCTIONS ==========
-def current_week_range():
-    today = datetime.utcnow()
-    monday = today - timedelta(days=today.weekday())
-    end = monday + timedelta(days=6)
-    return f"{monday.strftime('%b %d')}–{end.strftime('%b %d')}"
-
-def get_week_range(date):
-    """Calculate the week range (Monday to Sunday) for a given date."""
-    monday = date - timedelta(days=date.weekday())
-    sunday = monday + timedelta(days=6)
-    return f"Dispositions {monday.strftime('%b %-d')}–{sunday.strftime('%b %-d')}"
-
-def get_emoji_for_event(event_type):
-    emoji_map = {
-        "Wrap": "📝",
-        "Outgoing Wrap Up": "📝",
-        "Ready": "📞",
-        "Ready Outbound": "📤",
-        "Busy": "💻",
-        "Lunch": "🍽️",
-        "Break": "☕",
-        "Comfort Break": "🚻",
-        "Logged Out": "🔌",
-        "Device Busy": "💻",
-        "Training": "📚",
-        "In Meeting": "👥",
-        "Paperwork": "🗂️",
-        "Idle": "❗",
-        "Away": "🚶‍♂️"
-    }
-    return emoji_map.get(event_type, "⚠️")
-
-# ========== AGENT ID TO NAME MAPPING ==========
-agent_id_to_name = {
-    "10008": "Briana Roque",
-    "1064": "Carla Hagerman",
-    "1044": "Carleisha Smith",
-    "10005": "Cassandra Dunn",
-    "1033": "Crystalbell Miranda",
-    "1113": "Dajah Blackwell",
-    "1030": "Felicia Martin",
-    "1045": "Felicia Randall",
-    "1128": "Indira Gonzalez",
-    "1060": "Jason McLaughlin",
-    "1115": "Jeanette Bantz",
-    "10019": "Jesse Lorenzana Escarfullery",
-    "1003": "Jessica Lopez",
-    "1058": "Lakeira Robinson",
-    "1041": "Lyne Jean",
-    "1056": "Natalie Sukhu",
-    "1112": "Nicole Coleman",
-    "1111": "Peggy Richardson",
-    "10016": "Ramona Marshall",
-    "1057": "Rebecca Stokes",
-}
 
 # ========== SHIFT DETAILS ==========
 agent_shifts = {
@@ -426,30 +409,6 @@ agent_shifts = {
     }
 }
 
-# Agent teams - Jessica Lopez moved to Team Adriana
-agent_teams = {
-    "Carla Hagerman": "Team Adriana 💎",
-    "Dajah Blackwell": "Team Adriana 💎",
-    "Felicia Martin": "Team Adriana 💎",
-    "Felicia Randall": "Team Adriana 💎",
-    "Jeanette Bantz": "Team Adriana 💎",
-    "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
-    "Jessica Lopez": "Team Adriana 💎",  # Moved from "Team Bee Hive 🐝"
-    "Nicole Coleman": "Team Adriana 💎",
-    "Peggy Richardson": "Team Adriana 💎",
-    "Ramona Marshall": "Team Adriana 💎",
-    "Lyne Jean": "Team Bee Hive 🐝",
-    "Crystalbell Miranda": "Team Bee Hive 🐝",
-    "Cassandra Dunn": "Team Bee Hive 🐝",
-    "Briana Roque": "Team Bee Hive 🐝",
-    "Natalie Sukhu": "Team Bee Hive 🐝",
-    "Rebecca Stokes": "Team Bee Hive 🐝",
-    "Jason McLaughlin": "Team Bee Hive 🐝",
-    "Indira Gonzalez": "Team Bee Hive 🐝",
-    "Carleisha Smith": "Team Bee Hive 🐝",
-    "Lakeira Robinson": "Team Bee Hive 🐝"
-}
-
 # ========== TIMEZONE HANDLING ==========
 def is_within_shift(agent, timestamp):
     agent_data = agent_shifts.get(agent)
@@ -480,12 +439,106 @@ def parse_duration(duration):
     except (ValueError, TypeError):
         return 0
 
+# ========== GOOGLE SHEETS HELPER ==========
+def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
+    try:
+        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
+        if sheet_name not in sheets:
+            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
+            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
+            body = {"values": [headers]}
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_name}'!A1",
+                valueInputOption="RAW",
+                body=body
+            ).execute()
+        return sheet_name
+    except Exception as e:
+        print(f"Error creating sheet {sheet_name} with headers: {e}")
+        return sheet_name
+
+# ========== LOGGING TO FOLLOWUPS TAB ==========
+def log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign, alert_type=None, user=None, monitoring=None, action=None, reason=None, notes=None, approval_decision=None, approved_by=None):
+    try:
+        year = timestamp.year
+        sheets_service_info = get_sheets_service(year, sheet_type="followup")
+        if not sheets_service_info:
+            print(f"WARNING: Google Sheets service not available for year {year} (followup), skipping logging")
+            return
+
+        sheets_service, spreadsheet_id = sheets_service_info
+        sheet_name = "FollowUps"
+        headers = [
+            "Timestamp (UTC)", "Event Type", "Agent Name", "Duration (min)", "Interaction ID",
+            "Direction", "Status", "Campaign", "Alert Type", "Alert Acknowledged By",
+            "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue",
+            "Additional Notes", "Approval Decision", "Approved By"
+        ]
+        get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
+        team = agent_teams.get(agent, "Unknown Team")
+        values = [[
+            timestamp.isoformat(), event_type, agent, duration_min, interaction_id,
+            direction, status, campaign, alert_type if alert_type else "",
+            user if user else "", user if user else "", monitoring if monitoring else "",
+            action if action else "", reason if reason else "", notes if notes else "",
+            approval_decision if approval_decision else "", approved_by if approved_by else ""
+        ]]
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": values}
+        ).execute()
+        print(f"Logged to FollowUps tab: {event_type} for {agent} at {timestamp}")
+    except Exception as e:
+        print(f"ERROR: Failed to log to FollowUps tab: {e}")
+
+# Calculate duration since last state change for presence alerts
+def get_presence_duration(agent, current_timestamp, current_status):
+    try:
+        year = current_timestamp.year
+        sheets_service_info = get_sheets_service(year, sheet_type="followup")
+        if not sheets_service_info:
+            return 0
+
+        sheets_service, spreadsheet_id = sheets_service_info
+        sheet_name = "FollowUps"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A1:Q"
+        ).execute()
+        rows = result.get("values", [])
+        if not rows or len(rows) <= 1:
+            return 0
+
+        # Find the last presence change for this agent
+        last_presence_time = None
+        for row in reversed(rows[1:]):
+            if len(row) < 7:
+                continue
+            timestamp_str, event_type, row_agent, _, _, _, status, *_ = row
+            if row_agent != agent or event_type != "agent.presencechanged.v1":
+                continue
+            if status == current_status:
+                continue  # Skip the current state to find the previous state change
+            last_presence_time = parse(timestamp_str).replace(tzinfo=pytz.UTC)
+            break
+
+        if not last_presence_time:
+            return 0
+
+        duration_ms = (current_timestamp - last_presence_time).total_seconds() * 1000
+        return duration_ms
+    except Exception as e:
+        print(f"ERROR: Failed to calculate presence duration for {agent}: {e}")
+        return 0
+
 # ========== STATUS RULES ==========
 def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None):
     status = None
-    if event_type == "channel.activityrecord.v0":
-        disposition = event_data.get("interaction", {}).get("dispositionCode", "")
-    elif event_type == "channel.disconnected.v1":
+    if event_type == "channel.disconnected.v1":
         status = "Logged Out"
     elif event_type == "interaction.detailrecord.v0":
         channels = event_data.get("interaction", {}).get("channels", [])
@@ -585,39 +638,27 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
 def is_scheduled(event_type, agent, timestamp):
     return False  # Placeholder
 
-# ========== GOOGLE SHEETS HELPER ==========
-def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
-    try:
-        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
-        if sheet_name not in sheets:
-            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
-            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
-            body = {"values": [headers]}
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{sheet_name}'!A1",
-                valueInputOption="RAW",
-                body=body
-            ).execute()
-        return sheet_name
-    except Exception as e:
-        print(f"Error creating sheet {sheet_name} with headers: {e}")
-        return sheet_name
+def get_emoji_for_event(event_type):
+    emoji_map = {
+        "Wrap": "📝",
+        "Outgoing Wrap Up": "📝",
+        "Ready": "📞",
+        "Ready Outbound": "📤",
+        "Busy": "💻",
+        "Lunch": "🍽️",
+        "Break": "☕",
+        "Comfort Break": "🚻",
+        "Logged Out": "🔌",
+        "Device Busy": "💻",
+        "Training": "📚",
+        "In Meeting": "👥",
+        "Paperwork": "🗂️",
+        "Idle": "❗",
+        "Away": "🚶‍♂️"
+    }
+    return emoji_map.get(event_type, "⚠️")
 
-def get_or_create_sheet(service, spreadsheet_id, sheet_name):
-    try:
-        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
-        if sheet_name not in sheets:
-            requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
-            service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
-        return sheet_name
-    except Exception as e:
-        print(f"Error creating sheet {sheet_name}: {e}")
-        return sheet_name
-
-# ========== VONAGE WEBHOOK ==========
+# ========== VONAGE WEBHOOK FOR REAL-TIME ALERTS ==========
 @app.route("/vonage-events", methods=["POST"])
 def vonage_events():
     print("Received request to /vonage-events")
@@ -676,10 +717,8 @@ def vonage_events():
         # Extract duration for events
         duration_ms = 0
         if event_type == "agent.presencechanged.v1":
-            duration_ms = event_data.get("duration", 0)
-            if duration_ms == 0:
-                print(f"WARNING: Duration missing in agent.presencechanged.v1 event for agent {agent}. Skipping alert.")
-                return jsonify({"status": "skipped", "message": "Duration missing for presence event"}), 200
+            # Calculate duration since last state change
+            duration_ms = get_presence_duration(agent, timestamp, event_data.get("alert_status", event_type))
         elif event_type == "channel.wrapstarted.v1":
             duration_ms = event_data.get("duration", 0)
             if duration_ms == 0:
@@ -700,16 +739,14 @@ def vonage_events():
             campaign_phone = event_data["interaction"].get("fromAddress", None) or event_data["interaction"].get("toAddress", None)
         campaign = get_campaign_from_number(campaign_phone)
 
-        if event_type == "channel.activityrecord.v0":
-            disposition = event_data.get("interaction", {}).get("dispositionCode", "Not Specified")
-            start_time = event_data.get("interaction", {}).get("startTime", "")
-            initial_direction = event_data["interaction"].get("initialDirection", "Unknown")
-            to_address = event_data["interaction"].get("toAddress", "")
-            campaign = get_campaign_from_number(to_address)
-            log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id)
-            return jsonify({"status": "disposition logged"}), 200
+        # Extract direction and status
+        direction = event_data.get("interaction", {}).get("initialDirection", "Unknown") if "interaction" in event_data else "Unknown"
+        status = event_data.get("alert_status", event_type)
 
-        if event_type in ["channel.ended.v1", "channel.disconnected.v1"]:
+        # Log all events to FollowUps tab (for presence tracking)
+        log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign)
+
+        if event_type in ["channel.ended.v1", "channel.disconnected.v1", "channel.activityrecord.v0", "interaction.detailrecord.v0"]:
             print(f"Skipping notification for event type: {event_type}")
             return jsonify({"status": "skipped", "message": f"Notifications disabled for {event_type}"}), 200
 
@@ -723,6 +760,9 @@ def vonage_events():
             team = agent_teams.get(agent, "Unknown Team")
             vonage_link = "https://nam.newvoicemedia.com/CallCentre/portal/interactionsearch"
             states_without_interaction = ["Ready", "Ready Outbound", "Lunch", "Break", "Comfort Break", "Logged Out", "Idle", "Away", "Training", "In Meeting", "Paperwork"]
+
+            # Log the alert to FollowUps tab
+            log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign, alert_type=status)
 
             if status in ["Training", "In Meeting", "Paperwork"]:
                 blocks = [
@@ -757,404 +797,7 @@ def vonage_events():
         print(f"Error processing Vonage event: {e}")
         return jsonify({"status": "error"}), 500
 
-# ========== DISPOSITION LOGGING ==========
-def log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id):
-    try:
-        year = timestamp.year
-        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
-        if not sheets_service_info:
-            print(f"WARNING: Google Sheets service not available for year {year} (disposition), skipping disposition logging")
-            return
-
-        sheets_service, spreadsheet_id = sheets_service_info
-        sheet_name = get_week_range(timestamp)
-        headers = ["Agent Name", "Disposition Code", "Count", "Start Time", "Initial Direction (Inbound/Outbound)", "Campaign Name", "Interaction ID"]
-        get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-        values = [[agent, disposition, 1, start_time, initial_direction, campaign, interaction_id]]
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{sheet_name}'!A1",
-            valueInputOption="USER_ENTERED",
-            body={"values": values}
-        ).execute()
-        print(f"Logged disposition for {agent}: {disposition} in sheet {sheet_name} for year {year}")
-    except Exception as e:
-        print(f"ERROR: Failed to log disposition: {e}")
-
-def generate_disposition_summary(date):
-    try:
-        year = datetime.strptime(date, "%Y-%m-%d").year
-        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
-        if not sheets_service_info:
-            return f"Google Sheets service not available for year {year} (disposition)"
-
-        sheets_service, spreadsheet_id = sheets_service_info
-        sheet_name = get_week_range(datetime.strptime(date, "%Y-%m-%d"))
-        try:
-            result = sheets_service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{sheet_name}'!A1:G"
-            ).execute()
-        except Exception:
-            return "No data found for this date."
-
-        rows = result.get("values", [])
-        if not rows or len(rows) <= 1:
-            return "No disposition data found for this date."
-
-        count_map = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        for row in rows[1:]:
-            if len(row) >= 7:
-                agent, dispo, _, _, _, campaign, _ = row[:7]
-                count_map[agent][dispo][campaign] += 1
-
-        summary = ["*Disposition Summary:*\n"]
-        for agent, dispos in count_map.items():
-            summary.append(f"• {agent}:")
-            for dispo, campaigns in dispos.items():
-                for campaign, count in campaigns.items():
-                    summary.append(f"   - {dispo}: {count} ({campaign})")
-        return "\n".join(summary)
-    except Exception as e:
-        print(f"ERROR: Failed to generate disposition summary: {e}")
-        return f"Error generating disposition summary: {str(e)}"
-
-@app.route("/disposition-report", methods=["GET"])
-def disposition_report():
-    print("Received request to /disposition-report")
-    try:
-        date = request.args.get('date', (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d"))
-        summary = generate_disposition_summary(date)
-        year = datetime.strptime(date, "%Y-%m-%d").year
-        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
-        if not sheets_service_info:
-            return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year} (disposition)"}), 500
-        _, spreadsheet_id = sheets_service_info
-        export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text", "text": f"📊 Disposition Report – {date}"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": summary}},
-            {"type": "context", "elements": [
-                {"type": "mrkdwn", "text": f"📎 *Full Report:* <{export_link}|View in Google Sheets>"}
-            ]}
-        ]
-        post_slack_message(ALERT_CHANNEL_ID, blocks)
-        return jsonify({"status": "report sent", "date": date})
-    except Exception as e:
-        print(f"Error in disposition-report: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# ========== SLACK INTERACTIONS AND VIEW SUBMISSIONS ==========
-@app.route("/slack/interactions", methods=["POST"])
-def slack_interactions():
-    print("Received request to /slack/interactions")
-    payload = json.loads(request.form["payload"])
-    print(f"Interactivity payload: {payload}")
-
-    if payload["type"] == "block_actions":
-        action_id = payload["actions"][0]["action_id"]
-        user = payload["user"]["username"].replace(".", " ").title()
-        response_url = payload["response_url"]
-
-        if action_id == "assign_to_me":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, status, duration_min = value.split("|")
-            duration_min = float(duration_min)
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {status} alert for {agent}."}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{status}|{duration_min}", "action_id": "open_followup"}
-                ]}
-            ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year, sheet_type="followup")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = "FollowUps"
-                headers = ["Timestamp (UTC)", "Agent Name", "Status", "Duration (min)", "Campaign", "Interaction ID", "Team", "Alert Acknowledged By", "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By"]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                team = agent_teams.get(agent, "Unknown Team")
-                body = {"values": [[datetime.utcnow().isoformat(), agent, status, duration_min, "", campaign, team, user, user, "", "", "", "", "", ""]]}
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged alert acknowledgment for {agent}: {status}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
-
-        elif action_id == "approve_event":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, event_type = value.split("|")
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{event_type} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
-            ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year, sheet_type="followup")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = "FollowUps"
-                headers = ["Timestamp (UTC)", "Agent Name", "Status", "Duration (min)", "Campaign", "Interaction ID", "Team", "Alert Acknowledged By", "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By"]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                team = agent_teams.get(agent, "Unknown Team")
-                body = {"values": [[datetime.utcnow().isoformat(), agent, event_type, 0, "", campaign, team, "", user, "", "", "", "", "Approved", user]]}
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged approval for {agent}: {event_type}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
-
-        elif action_id == "not_approve_event":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, event_type = value.split("|")
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {event_type} alert for {agent}."}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{event_type}|0", "action_id": "open_followup"}
-                ]}
-            ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year, sheet_type="followup")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = "FollowUps"
-                headers = ["Timestamp (UTC)", "Agent Name", "Status", "Duration (min)", "Campaign", "Interaction ID", "Team", "Alert Acknowledged By", "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By"]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                team = agent_teams.get(agent, "Unknown Team")
-                body = {"values": [[datetime.utcnow().isoformat(), agent, event_type, 0, "", campaign, team, "", user, "", "", "", "", "Not Approved", user]]}
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged non-approval for {agent}: {event_type}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
-
-        elif action_id == "copy_interaction_id":
-            value = payload["actions"][0]["value"]
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
-            ]
-            requests.post(response_url, json={"replace_original": False, "blocks": blocks})
-            print(f"User {user} requested to copy Interaction ID: {value}")
-
-        elif action_id == "open_followup":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, status, duration_min = value.split("|")
-            duration_min = float(duration_min)
-            trigger_id = payload["trigger_id"]
-            modal = {
-                "trigger_id": trigger_id,
-                "view": {
-                    "type": "modal",
-                    "callback_id": "followup_submit",
-                    "title": {"type": "plain_text", "text": "Follow-Up"},
-                    "submit": {"type": "plain_text", "text": "Submit"},
-                    "blocks": [
-                        {"type": "input", "block_id": "monitoring", "element": {
-                            "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
-                                {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
-                                {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
-                                {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
-                            ],
-                            "action_id": "monitoring_method"
-                        }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
-                        {"type": "input", "block_id": "action", "element": {
-                            "type": "plain_text_input", "action_id": "action_taken",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
-                        }, "label": {"type": "plain_text", "text": "What did you do?"}},
-                        {"type": "input", "block_id": "reason", "element": {
-                            "type": "plain_text_input", "action_id": "reason_for_issue",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
-                        }, "label": {"type": "plain_text", "text": "Reason for issue"}},
-                        {"type": "input", "block_id": "notes", "element": {
-                            "type": "plain_text_input", "action_id": "additional_notes",
-                            "placeholder": {"type": "plain_text", "text": "Optional comments"}
-                        }, "label": {"type": "plain_text", "text": "Additional notes"}}
-                    ],
-                    "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "status": status, "duration_min": duration_min})
-                }
-            }
-            requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-
-        return "", 200
-
-    elif payload["type"] == "view_submission":
-        callback_id = payload["view"]["callback_id"]
-        print(f"Processing view submission with callback_id: {callback_id}")
-
-        if callback_id == "followup_submit":
-            print("Handling followup_submit")
-            values = payload["view"]["state"]["values"]
-            metadata = json.loads(payload["view"]["private_metadata"])
-            agent = metadata["agent"]
-            interaction_id = metadata["interaction_id"]
-            status = metadata["status"]
-            duration_min = float(metadata["duration_min"])
-            monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
-            action = values["action"]["action_taken"]["value"]
-            reason = values["reason"]["reason_for_issue"]["value"]
-            notes = values["notes"]["additional_notes"]["value"]
-            user = payload["user"]["username"].replace(".", " ").title()
-
-            year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year, sheet_type="followup")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = "FollowUps"
-                headers = ["Timestamp (UTC)", "Agent Name", "Status", "Duration (min)", "Campaign", "Interaction ID", "Team", "Alert Acknowledged By", "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By"]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                team = agent_teams.get(agent, "Unknown Team")
-                body = {"values": [[datetime.utcnow().isoformat(), agent, status, duration_min, "", interaction_id, team, user, user, monitoring, action, reason, notes, "", ""]]}
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A1",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged follow-up to Google Sheet: {sheet_name}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
-
-        elif callback_id == "weekly_update_modal":
-            print("Handling weekly_update_modal")
-            values = payload["view"]["state"]["values"]
-            start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
-            end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
-            top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
-            top_support = values["top_support"]["top_support_input"]["value"]
-            bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
-            bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
-            improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
-            team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
-            trends = values["trends"]["trends_input"]["value"]
-            additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
-
-            user = payload["user"]["username"].replace(".", " ").title()
-            week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
-
-            year = start_date.year
-            sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = f"Weekly {week}"
-                headers = [
-                    "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
-                    "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
-                ]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                body = {
-                    "values": [[
-                        datetime.utcnow().isoformat(), user, ", ".join(top_performers), top_support,
-                        ", ".join(bottom_performers), bottom_actions, improvement_plan, team_momentum, trends, additional_notes
-                    ]]
-                }
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A2",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (weekly_update)")
-
-        return jsonify({"response_action": "clear"}), 200
-
-    return "", 200
-
 # ========== SLACK COMMANDS ==========
-@app.route("/slack/commands/daily_report", methods=["GET", "POST"])
-def slack_command_daily_report():
-    print(f"Received {request.method} request to /slack/commands/daily_report")
-    if request.method == "GET":
-        print("Slack verification request received")
-        return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
-
-    print(f"Slash command payload: {request.form}")
-    today = datetime.utcnow()
-    report_date = today.strftime("%b %d")
-    date_for_dispositions = today.strftime("%Y-%m-%d")
-
-    text = request.form.get("text", "").strip()
-    if text.lower() == "yesterday":
-        today = today - timedelta(days=1)
-        report_date = today.strftime("%b %d")
-        date_for_dispositions = today.strftime("%Y-%m-%d")
-
-    disposition_summary = generate_disposition_summary(date_for_dispositions)
-    year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
-    sheets_service_info = get_sheets_service(year, sheet_type="disposition")
-    if not sheets_service_info:
-        return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year} (disposition)"}), 500
-    _, spreadsheet_id = sheets_service_info
-    export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
-
-    top_performer = "Jeanette Bantz"
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• Crystalbell Miranda – Wrap ❗\n• Rebecca Stokes – Call Time ❗\n• Carleisha Smith – Ready ❗ Not Ready ❗"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• Jessica Lopez\n• Jason McLaughlin"}},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Performer:* {top_performer} – 0 alerts 🎯"}]},
-        {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
-        {"type": "context", "elements": [
-            {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
-        ]},
-        {"type": "actions", "elements": [
-            {"type": "button", "text": {"type": "plain_text", "text": "👁️ Acknowledge"}, "value": "ack_report"}
-        ]}
-    ]
-    channel_id = request.form.get("channel_id")
-    print(f"Posting to channel: {channel_id}")
-    post_slack_message(channel_id, blocks)
-    print("Message posted successfully")
-    return "", 200
-
-@app.route("/slack/commands/weekly_report", methods=["GET", "POST"])
-def slack_command_weekly_report():
-    print(f"Received {request.method} request to /slack/commands/weekly_report")
-    if request.method == "GET":
-        print("Slack verification request received")
-        return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
-
-    print(f"Slash command payload: {request.form}")
-    channel_id = request.form.get("channel_id")
-    print(f"Posting to channel: {channel_id}")
-
-    today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)
-    start_date = end_date - timedelta(days=6)
-    date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
-
-    vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
-
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Team Performance:*\n• Team Adriana 💎: 98.5% SLA\n• Team Bee Hive 🐝: 97.2% SLA"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Download the full report with detailed metrics:*"}},
-        {"type": "actions", "elements": [
-            {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
-        ]}
-    ]
-
-    post_slack_message(channel_id, blocks)
-    print("Message posted successfully")
-    return "", 200
-
 @app.route("/slack/commands/weekly_update_form", methods=["GET", "POST"])
 def slack_command_weekly_update_form():
     print(f"Received {request.method} request to /slack/commands/weekly_update_form")
@@ -1316,63 +959,257 @@ def slack_command_weekly_update_form():
         print(f"ERROR in /slack/commands/weekly_update_form: {e}")
         return "Internal server error", 500
 
-# ========== DAILY REPORT SCHEDULER ==========
-def trigger_daily_report():
-    print("Triggering daily report")
-    yesterday = datetime.utcnow() - timedelta(days=1)
-    report_date = yesterday.strftime("%b %d")
-    date_for_dispositions = yesterday.strftime("%Y-%m-%d")
+# ========== SLACK INTERACTIONS AND VIEW SUBMISSIONS ==========
+@app.route("/slack/interactions", methods=["POST"])
+def slack_interactions():
+    print("Received request to /slack/interactions")
+    payload = json.loads(request.form["payload"])
+    print(f"Interactivity payload: {payload}")
 
-    disposition_summary = generate_disposition_summary(date_for_dispositions)
-    year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
-    sheets_service_info = get_sheets_service(year, sheet_type="disposition")
-    if not sheets_service_info:
-        print(f"WARNING: Could not generate report - no spreadsheet ID defined for year {year} (disposition)")
-        return
-    _, spreadsheet_id = sheets_service_info
-    export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
+    if payload["type"] == "block_actions":
+        action_id = payload["actions"][0]["action_id"]
+        user = payload["user"]["username"].replace(".", " ").title()
+        response_url = payload["response_url"]
 
-    top_performer = "Jeanette Bantz"
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• Crystalbell Miranda – Wrap ❗\n• Rebecca Stokes – Call Time ❗\n• Carleisha Smith – Ready ❗ Not Ready ❗"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• Jessica Lopez\n• Jason McLaughlin"}},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Perfor mer:* {top_performer} – 0 alerts 🎯"}]},
-        {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
-        {"type": "context", "elements": [
-            {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
-        ]},
-        {"type": "actions", "elements": [
-            {"type": "button", "text": {"type": "plain_text", "text": "👁️ Acknowledge"}, "value": "ack_report"}
-        ]}
-    ]
-    post_slack_message(ALERT_CHANNEL_ID, blocks)
+        if action_id == "assign_to_me":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign, status, duration_min = value.split("|")
+            duration_min = float(duration_min)
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {status} alert for {agent}."}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{status}|{duration_min}", "action_id": "open_followup"}
+                ]}
+            ]
+            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-# ========== WEEKLY REPORT WITH VONAGE METRICS ==========
-def generate_weekly_report():
-    print("Generating weekly report")
-    today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)
-    start_date = end_date - timedelta(days=6)
-    date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
+            # Log the "Assigned to Me" action to FollowUps tab
+            year = datetime.utcnow().year
+            team = agent_teams.get(agent, "Unknown Team")
+            log_to_followups(
+                event_type="assign_to_me",
+                agent=agent,
+                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                duration_min=duration_min,
+                interaction_id=campaign,
+                direction="Unknown",
+                status=status,
+                campaign=campaign,
+                alert_type=status,
+                user=user,
+                approval_decision="Assigned"
+            )
+            print(f"Logged 'Assigned to Me' action for {agent}: {status}")
 
-    vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
+        elif action_id == "approve_event":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign, event_type = value.split("|")
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{event_type} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
+            ]
+            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Weekly Performance Report – {date_range}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Weekly Metrics Summary:*\n• Average Handle Time: 5m 23s\n• Average Wait Time: 32s\n• Abandonment Rate: 3.2%\n• Total Calls: 1,245"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Team Performance:*\n• Team Adriana 💎: 98.5% SLA\n• Team Bee Hive 🐝: 97.2% SLA"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Download the full report with detailed metrics:*"}},
-        {"type": "actions", "elements": [
-            {"type": "button", "text": {"type": "plain_text", "text": "📊 Download Full Report"}, "url": vonage_report_url}
-        ]}
-    ]
+            # Log the approval to FollowUps tab
+            year = datetime.utcnow().year
+            team = agent_teams.get(agent, "Unknown Team")
+            log_to_followups(
+                event_type="approve_event",
+                agent=agent,
+                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                duration_min=0,
+                interaction_id=campaign,
+                direction="Unknown",
+                status=event_type,
+                campaign=campaign,
+                alert_type=event_type,
+                user=user,
+                approval_decision="Approved",
+                approved_by=user
+            )
+            print(f"Logged approval for {agent}: {event_type}")
 
-    post_slack_message(ALERT_CHANNEL_ID, blocks)
+        elif action_id == "not_approve_event":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign, event_type = value.split("|")
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {event_type} alert for {agent}."}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{event_type}|0", "action_id": "open_followup"}
+                ]}
+            ]
+            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-scheduler = BackgroundScheduler(timezone="US/Eastern")
-scheduler.add_job(trigger_daily_report, 'cron', hour=7, minute=0)
-scheduler.start()
+            # Log the non-approval to FollowUps tab
+            year = datetime.utcnow().year
+            team = agent_teams.get(agent, "Unknown Team")
+            log_to_followups(
+                event_type="not_approve_event",
+                agent=agent,
+                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                duration_min=0,
+                interaction_id=campaign,
+                direction="Unknown",
+                status=event_type,
+                campaign=campaign,
+                alert_type=event_type,
+                user=user,
+                approval_decision="Not Approved",
+                approved_by=user
+            )
+            print(f"Logged non-approval for {agent}: {event_type}")
+
+        elif action_id == "copy_interaction_id":
+            value = payload["actions"][0]["value"]
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
+            ]
+            requests.post(response_url, json={"replace_original": False, "blocks": blocks})
+            print(f"User {user} requested to copy Interaction ID: {value}")
+
+        elif action_id == "open_followup":
+            value = payload["actions"][0]["value"]
+            _, agent, campaign, status, duration_min = value.split("|")
+            duration_min = float(duration_min)
+            trigger_id = payload["trigger_id"]
+            modal = {
+                "trigger_id": trigger_id,
+                "view": {
+                    "type": "modal",
+                    "callback_id": "followup_submit",
+                    "title": {"type": "plain_text", "text": "Follow-Up"},
+                    "submit": {"type": "plain_text", "text": "Submit"},
+                    "blocks": [
+                        {"type": "input", "block_id": "monitoring", "element": {
+                            "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
+                            "options": [
+                                {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
+                                {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
+                                {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
+                                {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
+                            ],
+                            "action_id": "monitoring_method"
+                        }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
+                        {"type": "input", "block_id": "action", "element": {
+                            "type": "plain_text_input", "action_id": "action_taken",
+                            "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
+                        }, "label": {"type": "plain_text", "text": "What did you do?"}},
+                        {"type": "input", "block_id": "reason", "element": {
+                            "type": "plain_text_input", "action_id": "reason_for_issue",
+                            "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
+                        }, "label": {"type": "plain_text", "text": "Reason for issue"}},
+                        {"type": "input", "block_id": "notes", "element": {
+                            "type": "plain_text_input", "action_id": "additional_notes",
+                            "placeholder": {"type": "plain_text", "text": "Optional comments"}
+                        }, "label": {"type": "plain_text", "text": "Additional notes"}}
+                    ],
+                    "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "status": status, "duration_min": duration_min, "user": user})
+                }
+            }
+            requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+
+        return "", 200
+
+    elif payload["type"] == "view_submission":
+        callback_id = payload["view"]["callback_id"]
+        print(f"Processing view submission with callback_id: {callback_id}")
+
+        if callback_id == "followup_submit":
+            print("Handling followup_submit")
+            values = payload["view"]["state"]["values"]
+            metadata = json.loads(payload["view"]["private_metadata"])
+            agent = metadata["agent"]
+            interaction_id = metadata["interaction_id"]
+            status = metadata["status"]
+            duration_min = float(metadata["duration_min"])
+            user = metadata["user"]
+            monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
+            action = values["action"]["action_taken"]["value"]
+            reason = values["reason"]["reason_for_issue"]["value"]
+            notes = values["notes"]["additional_notes"]["value"]
+
+            # Log the follow-up submission to FollowUps tab
+            year = datetime.utcnow().year
+            team = agent_teams.get(agent, "Unknown Team")
+            log_to_followups(
+                event_type="followup_submit",
+                agent=agent,
+                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                duration_min=duration_min,
+                interaction_id=interaction_id,
+                direction="Unknown",
+                status=status,
+                campaign="",
+                alert_type=status,
+                user=user,
+                monitoring=monitoring,
+                action=action,
+                reason=reason,
+                notes=notes
+            )
+            print(f"Logged follow-up submission for {agent}: {status}")
+
+        elif callback_id == "weekly_update_modal":
+            print("Handling weekly_update_modal")
+            values = payload["view"]["state"]["values"]
+            metadata = json.loads(payload["view"]["private_metadata"])
+            channel_id = metadata["channel_id"]
+            start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
+            end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
+            top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
+            top_support = values["top_support"]["top_support_input"]["value"]
+            bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
+            bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
+            improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
+            team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
+            trends = values["trends"]["trends_input"]["value"]
+            additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
+
+            user = payload["user"]["username"].replace(".", " ").title()
+            week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
+
+            # Log to Google Sheet
+            year = start_date.year
+            sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
+            if sheets_service_info:
+                sheets_service, spreadsheet_id = sheets_service_info
+                sheet_name = f"Weekly {week}"
+                headers = [
+                    "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
+                    "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
+                ]
+                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
+                body = {
+                    "values": [[
+                        datetime.utcnow().isoformat(), user, ", ".join(top_performers), top_support,
+                        ", ".join(bottom_performers), bottom_actions, improvement_plan, team_momentum, trends, additional_notes
+                    ]]
+                }
+                sheets_service.spreadsheets().values().append(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"'{sheet_name}'!A2",
+                    valueInputOption="USER_ENTERED",
+                    body=body
+                ).execute()
+                print(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
+            else:
+                print(f"WARNING: Could not log to Google Sheets for year {year} (weekly_update)")
+
+            # Post to Slack
+            blocks = [
+                {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
+            ]
+            post_slack_message(channel_id, blocks)
+
+        return jsonify({"response_action": "clear"}), 200
+
+    return "", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
