@@ -56,6 +56,9 @@ sheets_services = {
     "followup": {}
 }
 
+# Dictionary to store the current Presence State and timestamp for each agent
+agent_presence_states = {}
+
 def get_sheets_service(year, sheet_type="followup"):
     """Get or create a sheets_service instance for the given year and sheet type."""
     if sheet_type not in sheets_services:
@@ -439,6 +442,19 @@ def parse_duration(duration):
     except (ValueError, TypeError):
         return 0
 
+# ========== WEEKLY TAB HELPER ==========
+def get_weekly_tab_name(timestamp):
+    """Determine the weekly tab name (e.g., 'Weekly Apr 1 - Apr 7') based on the timestamp."""
+    # Find the Monday of the current week (assuming weeks start on Monday)
+    date = timestamp.date()
+    days_to_monday = (date.weekday() - 0) % 7  # 0 is Monday
+    monday = date - timedelta(days=days_to_monday)
+    # Find the Sunday of the same week
+    sunday = monday + timedelta(days=6)
+    # Format the tab name
+    tab_name = f"Weekly {monday.strftime('%b %-d')} - {sunday.strftime('%b %-d')}"
+    return tab_name
+
 # ========== GOOGLE SHEETS HELPER ==========
 def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
     try:
@@ -459,8 +475,8 @@ def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, header
         print(f"Error creating sheet {sheet_name} with headers: {e}")
         return sheet_name
 
-# ========== LOGGING TO FOLLOWUPS TAB ==========
-def log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign, alert_type=None, user=None, monitoring=None, action=None, reason=None, notes=None, approval_decision=None, approved_by=None):
+# ========== LOGGING TO WEEKLY TAB IN FOLLOWUPS SPREADSHEET ==========
+def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign, user=None, monitoring=None, action=None, reason=None, notes=None, approval_decision=None, approved_by=None):
     try:
         year = timestamp.year
         sheets_service_info = get_sheets_service(year, sheet_type="followup")
@@ -469,19 +485,27 @@ def log_to_followups(event_type, agent, timestamp, duration_min, interaction_id,
             return
 
         sheets_service, spreadsheet_id = sheets_service_info
-        sheet_name = "FollowUps"
+        # Determine the weekly tab name (e.g., "Weekly Apr 1 - Apr 7")
+        sheet_name = get_weekly_tab_name(timestamp)
         headers = [
-            "Timestamp (UTC)", "Event Type", "Agent Name", "Duration (min)", "Interaction ID",
-            "Direction", "Status", "Campaign", "Alert Type", "Alert Acknowledged By",
-            "Assigned To (Lead)", "Monitoring Method", "Follow-Up Action", "Reason for Issue",
-            "Additional Notes", "Approval Decision", "Approved By"
+            "Timestamp", "Agent Name", "Agent State", "Duration (min)", "Interaction ID",
+            "Campaign", "Team", "Assigned To (Lead)", "Monitoring Method",
+            "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By (Slack)"
         ]
         get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
         team = agent_teams.get(agent, "Unknown Team")
+
+        # Format timestamp in standard format (e.g., "2025-04-07 12:00:00 AM")
+        formatted_timestamp = timestamp.strftime("%Y-%m-%d %I:%M:%S %p")
+
+        # Determine if Interaction ID and Campaign are applicable for this state
+        states_with_interaction = ["Busy", "Wrap", "Outgoing Wrap Up"]
+        interaction_id_value = interaction_id if agent_state in states_with_interaction else "Not Applicable for This State"
+        campaign_value = campaign if agent_state in states_with_interaction else "Not Applicable for This State"
+
         values = [[
-            timestamp.isoformat(), event_type, agent, duration_min, interaction_id,
-            direction, status, campaign, alert_type if alert_type else "",
-            user if user else "", user if user else "", monitoring if monitoring else "",
+            formatted_timestamp, agent, agent_state, duration_min, interaction_id_value,
+            campaign_value, team, user if user else "", monitoring if monitoring else "",
             action if action else "", reason if reason else "", notes if notes else "",
             approval_decision if approval_decision else "", approved_by if approved_by else ""
         ]]
@@ -491,172 +515,75 @@ def log_to_followups(event_type, agent, timestamp, duration_min, interaction_id,
             valueInputOption="USER_ENTERED",
             body={"values": values}
         ).execute()
-        print(f"Logged to FollowUps tab: {event_type} for {agent} at {timestamp}")
+        print(f"Logged to {sheet_name} tab for {agent} at {formatted_timestamp}")
     except Exception as e:
-        print(f"ERROR: Failed to log to FollowUps tab: {e}")
+        print(f"ERROR: Failed to log to {sheet_name} tab: {e}")
 
 # Calculate duration since last state change for presence alerts
-def get_presence_duration(agent, current_timestamp, current_status):
+def get_event_duration(agent, current_timestamp, current_agent_state):
     try:
-        year = current_timestamp.year
-        sheets_service_info = get_sheets_service(year, sheet_type="followup")
-        if not sheets_service_info:
+        # Check if the agent has a recorded presence state
+        if agent not in agent_presence_states:
             return 0
 
-        sheets_service, spreadsheet_id = sheets_service_info
-        sheet_name = "FollowUps"
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{sheet_name}'!A1:Q"
-        ).execute()
-        rows = result.get("values", [])
-        if not rows or len(rows) <= 1:
-            return 0
+        last_state, last_timestamp = agent_presence_states[agent]
+        if last_state == current_agent_state:
+            return 0  # No duration if the state hasn't changed
 
-        # Find the last presence change for this agent
-        last_presence_time = None
-        for row in reversed(rows[1:]):
-            if len(row) < 7:
-                continue
-            timestamp_str, event_type, row_agent, _, _, _, status, *_ = row
-            if row_agent != agent or event_type != "agent.presencechanged.v1":
-                continue
-            if status == current_status:
-                continue  # Skip the current state to find the previous state change
-            last_presence_time = parse(timestamp_str).replace(tzinfo=pytz.UTC)
-            break
-
-        if not last_presence_time:
-            return 0
-
-        duration_ms = (current_timestamp - last_presence_time).total_seconds() * 1000
+        duration_ms = (current_timestamp - last_timestamp).total_seconds() * 1000
         return duration_ms
     except Exception as e:
-        print(f"ERROR: Failed to calculate presence duration for {agent}: {e}")
+        print(f"ERROR: Failed to calculate event duration for {agent}: {e}")
         return 0
 
-# ========== STATUS RULES ==========
-def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None):
-    status = None
-    if event_type == "channel.disconnected.v1":
-        status = "Logged Out"
-    elif event_type == "interaction.detailrecord.v0":
-        channels = event_data.get("interaction", {}).get("channels", [])
-        for channel in channels:
-            for event in channel.get("channelEvents", []):
-                if event.get("type") == "queue" and duration_min > 2:
-                    status = "Ready"
-                elif event.get("type") == "connected":
-                    connected_duration = parse_duration(event.get("duration", 0))
-                    if connected_duration > 8:
-                        status = "Busy"
-                if status:
-                    break
-            if status:
-                break
-    elif event_type == "agent.presencechanged.v1":
-        presence_type = event_data.get("presence", {}).get("category", {}).get("type", "").lower()
-        subcategory = event_data.get("presence", {}).get("category", {}).get("subcategory", "").lower()
-        description = event_data.get("presence", {}).get("description", "").lower()
-        if presence_type == "ready":
-            if "outbound" in subcategory or "outbound" in description or "ready_outbound" in subcategory or "ready_outbound" in description:
-                status = "Ready Outbound"
-            else:
-                status = "Ready"
-        elif presence_type == "lunch":
-            status = "Lunch"
-        elif presence_type == "break":
-            status = "Break"
-        elif presence_type == "comfort_break":
-            status = "Comfort Break"
-        elif presence_type == "logged_out":
-            status = "Logged Out"
-        elif presence_type == "training":
-            status = "Training"
-        elif presence_type == "meeting":
-            status = "In Meeting"
-        elif presence_type == "paperwork":
-            status = "Paperwork"
-        elif presence_type == "idle":
-            status = "Idle"
-        elif presence_type == "away":
-            status = "Away"
-    elif event_type == "channel.alerted.v1":
-        status = "Ready"
-    elif event_type == "channel.connected.v1":
-        status = "Busy"
-    elif event_type == "channel.connectionfailed.v1":
-        status = "Device Busy"
-    elif event_type == "channel.ended.v1":
-        status = "Logged Out"
-    elif event_type == "channel.held.v1":
-        status = "Break"
-    elif event_type == "channel.interrupted.v1":
-        status = "Break"
-    elif event_type == "channel.parked.v1":
-        status = "Away"
-    elif event_type == "channel.resumed.v1":
-        status = "Ready"
-    elif event_type == "channel.retrieved.v1":
-        status = "Ready"
-    elif event_type == "channel.unparked.v1":
-        status = "Ready"
-    elif event_type == "channel.wrapstarted.v1":
-        status = "Wrap"
-
-    if not status:
-        status = event_type
-
-    event_data["alert_status"] = status
+# ========== AGENT STATE RULES ==========
+def should_trigger_alert(agent_state, duration_min, is_in_shift, event_data=None):
+    event_data["alert_agent_state"] = agent_state
     event_data["alert_duration_min"] = duration_min
 
-    if status in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
+    if agent_state in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
         return True
-    elif status in ["Ready", "Ready Outbound"] and duration_min > 2 and is_in_shift:
+    elif agent_state in ["Ready", "Ready Outbound", "Idle", "Idle (Outbound)"] and duration_min > 2 and is_in_shift:
         return True
-    elif status == "Busy" and duration_min > 8:
+    elif agent_state == "Busy" and duration_min > 8:
         return True
-    elif status == "Lunch" and duration_min > 30:
+    elif agent_state == "Lunch" and duration_min > 30:
         return True
-    elif status == "Break" and duration_min > 15:
+    elif agent_state == "Break" and duration_min > 15:
         return True
-    elif status == "Comfort Break" and duration_min > 5:
+    elif agent_state == "Comfort Break" and duration_min > 5:
         return True
-    elif status == "Logged Out" and is_in_shift:
+    elif agent_state == "Logged Out" and is_in_shift:
         return True
-    elif status == "Device Busy":
-        return True
-    elif status == "Idle" and duration_min > 1:
-        return True
-    elif status == "Away":
-        return True
-    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, event_data.get("agent"), event_data.get("timestamp")):
+    elif agent_state in ["Device Busy", "Device Unreachable", "Fault", "Away", "Extended Away", "In Meeting", "Paperwork", "Team Meeting", "Training"]:
         return True
 
     return False
 
-def is_scheduled(event_type, agent, timestamp):
-    return False  # Placeholder
-
-def get_emoji_for_event(event_type):
+def get_emoji_for_event(agent_state):
     emoji_map = {
         "Wrap": "📝",
         "Outgoing Wrap Up": "📝",
         "Ready": "📞",
         "Ready Outbound": "📤",
+        "Idle": "❗",
+        "Idle (Outbound)": "❗",
         "Busy": "💻",
         "Lunch": "🍽️",
         "Break": "☕",
         "Comfort Break": "🚻",
         "Logged Out": "🔌",
         "Device Busy": "💻",
-        "Training": "📚",
+        "Device Unreachable": "🔌",
+        "Fault": "⚠️",
+        "Away": "🚶‍♂️",
+        "Extended Away": "🚶‍♂️",
         "In Meeting": "👥",
         "Paperwork": "🗂️",
-        "Idle": "❗",
-        "Away": "🚶‍♂️"
+        "Team Meeting": "👥",
+        "Training": "📚"
     }
-    return emoji_map.get(event_type, "⚠️")
+    return emoji_map.get(agent_state, "⚠️")
 
 # ========== VONAGE WEBHOOK FOR REAL-TIME ALERTS ==========
 @app.route("/vonage-events", methods=["POST"])
@@ -670,6 +597,11 @@ def vonage_events():
         if not event_type:
             print("ERROR: Missing event type in Vonage payload")
             return jsonify({"status": "error", "message": "Missing event type"}), 400
+
+        # Skip processing for channel.alerted.v1 and channel.connected.v1
+        if event_type in ["channel.alerted.v1", "channel.connected.v1"]:
+            print(f"Skipping event type {event_type} as per requirements")
+            return jsonify({"status": "skipped", "message": f"Event type {event_type} not processed"}), 200
 
         timestamp_str = data.get("time", datetime.utcnow().isoformat())
         timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
@@ -714,84 +646,131 @@ def vonage_events():
 
         event_data["agent"] = agent
 
-        # Extract duration for events
-        duration_ms = 0
-        if event_type == "agent.presencechanged.v1":
-            # Calculate duration since last state change
-            duration_ms = get_presence_duration(agent, timestamp, event_data.get("alert_status", event_type))
-        elif event_type == "channel.wrapstarted.v1":
-            duration_ms = event_data.get("duration", 0)
-            if duration_ms == 0:
-                print(f"WARNING: Duration missing in channel.wrapstarted.v1 event for agent {agent}. Skipping alert.")
-                return jsonify({"status": "skipped", "message": "Duration missing for wrap event"}), 200
-        elif "interaction" in event_data and "channels" in event_data["interaction"]:
-            for channel in event_data["interaction"]["channels"]:
-                if channel.get("party", {}).get("role") == "agent":
-                    duration_ms = channel.get("duration", 0)
-                    break
-        elif "channel" in event_data:
-            duration_ms = event_data.get("duration", 0)
-        duration_min = parse_duration(duration_ms)
-
         # Extract campaign phone number (only for interaction-based events)
         campaign_phone = None
         if "interaction" in event_data:
             campaign_phone = event_data["interaction"].get("fromAddress", None) or event_data["interaction"].get("toAddress", None)
         campaign = get_campaign_from_number(campaign_phone)
 
-        # Extract direction and status
-        direction = event_data.get("interaction", {}).get("initialDirection", "Unknown") if "interaction" in event_data else "Unknown"
-        status = event_data.get("alert_status", event_type)
+        # Determine agent state
+        agent_state = None
+        if event_type == "agent.presencechanged.v1":
+            presence_type = event_data.get("presence", {}).get("category", {}).get("type", "").lower()
+            subcategory = event_data.get("presence", {}).get("category", {}).get("subcategory", "").lower()
+            description = event_data.get("presence", {}).get("description", "").lower()
+            if presence_type == "ready":
+                if "outbound" in subcategory or "outbound" in description or "ready_outbound" in subcategory or "ready_outbound" in description:
+                    agent_state = "Ready Outbound"
+                else:
+                    agent_state = "Ready"
+            elif presence_type == "lunch":
+                agent_state = "Lunch"
+            elif presence_type == "break":
+                agent_state = "Break"
+            elif presence_type == "comfort_break":
+                agent_state = "Comfort Break"
+            elif presence_type == "logged_out":
+                agent_state = "Logged Out"
+            elif presence_type == "training":
+                agent_state = "Training"
+            elif presence_type == "meeting":
+                agent_state = "In Meeting"
+            elif presence_type == "paperwork":
+                agent_state = "Paperwork"
+            elif presence_type == "idle":
+                if "outbound" in subcategory or "outbound" in description:
+                    agent_state = "Idle (Outbound)"
+                else:
+                    agent_state = "Idle"
+            elif presence_type == "away":
+                agent_state = "Away"
+            elif presence_type == "extended_away":
+                agent_state = "Extended Away"
+            elif presence_type == "team_meeting":
+                agent_state = "Team Meeting"
 
-        # Log all events to FollowUps tab (for presence tracking)
-        log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign)
+            # Update the agent's presence state in memory
+            if agent_state:
+                agent_presence_states[agent] = (agent_state, timestamp)
+
+        # If not a presence change, check for specific channel events
+        if not agent_state:
+            if event_type == "channel.connectionfailed.v1":
+                agent_state = "Device Busy"
+            elif event_type == "channel.ended.v1":
+                agent_state = "Logged Out"
+            elif event_type == "channel.held.v1":
+                agent_state = "Break"
+            elif event_type == "channel.interrupted.v1":
+                agent_state = "Break"
+            elif event_type == "channel.parked.v1":
+                agent_state = "Away"
+            elif event_type == "channel.resumed.v1":
+                agent_state = "Ready"
+            elif event_type == "channel.retrieved.v1":
+                agent_state = "Ready"
+            elif event_type == "channel.unparked.v1":
+                agent_state = "Ready"
+            elif event_type == "channel.wrapstarted.v1":
+                agent_state = "Wrap"
+
+        # If we still don't have an agent state, check the stored presence state
+        if not agent_state and agent in agent_presence_states:
+            agent_state = agent_presence_states[agent][0]
+
+        if not agent_state:
+            agent_state = "Unknown"
+
+        # Calculate duration based on the last presence state change
+        duration_ms = get_event_duration(agent, interaction_id, timestamp, agent_state)
+        duration_min = parse_duration(duration_ms)
 
         if event_type in ["channel.ended.v1", "channel.disconnected.v1", "channel.activityrecord.v0", "interaction.detailrecord.v0"]:
             print(f"Skipping notification for event type: {event_type}")
             return jsonify({"status": "skipped", "message": f"Notifications disabled for {event_type}"}), 200
 
         is_in_shift = is_within_shift(agent, timestamp)
-        print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}, Campaign: {campaign}, Interaction ID: {interaction_id}")
+        print(f"Event: {event_type}, Agent: {agent}, Agent State: {agent_state}, Duration: {duration_min} min, In Shift: {is_in_shift}, Campaign: {campaign}, Interaction ID: {interaction_id}")
 
-        if should_trigger_alert(event_type, duration_min, is_in_shift, event_data):
-            status = event_data.get("alert_status", event_type)
+        if should_trigger_alert(agent_state, duration_min, is_in_shift, event_data):
+            agent_state = event_data.get("alert_agent_state", agent_state)
             duration_min = event_data.get("alert_duration_min", duration_min)
-            emoji = get_emoji_for_event(status)
+            emoji = get_emoji_for_event(agent_state)
             team = agent_teams.get(agent, "Unknown Team")
             vonage_link = "https://nam.newvoicemedia.com/CallCentre/portal/interactionsearch"
-            states_without_interaction = ["Ready", "Ready Outbound", "Lunch", "Break", "Comfort Break", "Logged Out", "Idle", "Away", "Training", "In Meeting", "Paperwork"]
+            states_without_interaction = ["Idle", "Idle (Outbound)", "Device Busy", "Device Unreachable", "Fault", "Away", "Break", "Comfort Break", "Extended Away", "In Meeting", "Lunch", "Paperwork", "Team Meeting", "Training", "Logged Out"]
 
-            # Log the alert to FollowUps tab
-            log_to_followups(event_type, agent, timestamp, duration_min, interaction_id, direction, status, campaign, alert_type=status)
+            # Log the alert to the weekly tab
+            log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign)
 
-            if status in ["Training", "In Meeting", "Paperwork"]:
+            if agent_state in ["Training", "In Meeting", "Paperwork", "Team Meeting"]:
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
                     {"type": "actions", "elements": [
-                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Approved by Management"}, "value": f"approve|{agent}|{interaction_id}|{status}", "action_id": "approve_event"},
-                        {"type": "button", "text": {"type": "plain_text", "text": "❌ Not Approved"}, "value": f"not_approve|{agent}|{interaction_id}|{status}", "action_id": "not_approve_event"}
+                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Approved by Management"}, "value": f"approve|{agent}|{interaction_id}|{agent_state}", "action_id": "approve_event"},
+                        {"type": "button", "text": {"type": "plain_text", "text": "❌ Not Approved"}, "value": f"not_approve|{agent}|{interaction_id}|{agent_state}", "action_id": "not_approve_event"}
                     ]}
                 ]
-            elif status in states_without_interaction:
+            elif agent_state in states_without_interaction:
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
                     {"type": "actions", "elements": [
-                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
+                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}", "action_id": "assign_to_me"}
                     ]}
                 ]
             else:
                 buttons = [
-                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}", "action_id": "assign_to_me"},
                     {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
                     {"type": "button", "text": {"type": "plain_text", "text": "🔗 Vonage"}, "url": vonage_link, "action_id": "vonage_link"}
                 ]
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
                     {"type": "actions", "elements": buttons}
                 ]
             post_slack_message(ALERT_CHANNEL_ID, blocks)
         else:
-            print(f"Alert not triggered for {agent}: Status={status}, Duration={duration_min}, In Shift={is_in_shift}")
+            print(f"Alert not triggered for {agent}: Agent State={agent_state}, Duration={duration_min}, In Shift={is_in_shift}")
         return jsonify({"status": "posted"}), 200
     except Exception as e:
         print(f"Error processing Vonage event: {e}")
@@ -964,7 +943,7 @@ def slack_command_weekly_update_form():
 def slack_interactions():
     print("Received request to /slack/interactions")
     payload = json.loads(request.form["payload"])
-    print(f"Interactivity payload: {payload}")
+    print(f"Interactivity payload: {json.dumps(payload, indent=2)}")
 
     if payload["type"] == "block_actions":
         action_id = payload["actions"][0]["action_id"]
@@ -973,90 +952,82 @@ def slack_interactions():
 
         if action_id == "assign_to_me":
             value = payload["actions"][0]["value"]
-            _, agent, campaign, status, duration_min = value.split("|")
+            _, agent, campaign, agent_state, duration_min = value.split("|")
             duration_min = float(duration_min)
             blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {status} alert for {agent}."}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
                 {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{status}|{duration_min}", "action_id": "open_followup"}
+                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|{duration_min}", "action_id": "open_followup"}
                 ]}
             ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+            response = requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+            print(f"Updated Slack message with Follow-Up button: {response.status_code} - {response.text}")
 
-            # Log the "Assigned to Me" action to FollowUps tab
+            # Log the "Assigned to Me" action to the weekly tab
             year = datetime.utcnow().year
             team = agent_teams.get(agent, "Unknown Team")
             log_to_followups(
-                event_type="assign_to_me",
                 agent=agent,
                 timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
                 duration_min=duration_min,
                 interaction_id=campaign,
-                direction="Unknown",
-                status=status,
+                agent_state=agent_state,
                 campaign=campaign,
-                alert_type=status,
                 user=user,
                 approval_decision="Assigned"
             )
-            print(f"Logged 'Assigned to Me' action for {agent}: {status}")
+            print(f"Logged 'Assigned to Me' action for {agent}: {agent_state}")
 
         elif action_id == "approve_event":
             value = payload["actions"][0]["value"]
-            _, agent, campaign, event_type = value.split("|")
+            _, agent, campaign, agent_state = value.split("|")
             blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{event_type} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{agent_state} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-            # Log the approval to FollowUps tab
+            # Log the approval to the weekly tab
             year = datetime.utcnow().year
             team = agent_teams.get(agent, "Unknown Team")
             log_to_followups(
-                event_type="approve_event",
                 agent=agent,
                 timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
                 duration_min=0,
                 interaction_id=campaign,
-                direction="Unknown",
-                status=event_type,
+                agent_state=agent_state,
                 campaign=campaign,
-                alert_type=event_type,
                 user=user,
                 approval_decision="Approved",
                 approved_by=user
             )
-            print(f"Logged approval for {agent}: {event_type}")
+            print(f"Logged approval for {agent}: {agent_state}")
 
         elif action_id == "not_approve_event":
             value = payload["actions"][0]["value"]
-            _, agent, campaign, event_type = value.split("|")
+            _, agent, campaign, agent_state = value.split("|")
             blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {event_type} alert for {agent}."}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
                 {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{event_type}|0", "action_id": "open_followup"}
+                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|0", "action_id": "open_followup"}
                 ]}
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-            # Log the non-approval to FollowUps tab
+            # Log the non-approval to the weekly tab
             year = datetime.utcnow().year
             team = agent_teams.get(agent, "Unknown Team")
             log_to_followups(
-                event_type="not_approve_event",
                 agent=agent,
                 timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
                 duration_min=0,
                 interaction_id=campaign,
-                direction="Unknown",
-                status=event_type,
+                agent_state=agent_state,
                 campaign=campaign,
-                alert_type=event_type,
                 user=user,
                 approval_decision="Not Approved",
                 approved_by=user
             )
-            print(f"Logged non-approval for {agent}: {event_type}")
+            print(f"Logged non-approval for {agent}: {agent_state}")
 
         elif action_id == "copy_interaction_id":
             value = payload["actions"][0]["value"]
@@ -1067,10 +1038,13 @@ def slack_interactions():
             print(f"User {user} requested to copy Interaction ID: {value}")
 
         elif action_id == "open_followup":
+            print(f"Handling open_followup action for user: {user}")
             value = payload["actions"][0]["value"]
-            _, agent, campaign, status, duration_min = value.split("|")
+            print(f"Button value: {value}")
+            _, agent, campaign, agent_state, duration_min = value.split("|")
             duration_min = float(duration_min)
             trigger_id = payload["trigger_id"]
+            print(f"Trigger ID: {trigger_id}")
             modal = {
                 "trigger_id": trigger_id,
                 "view": {
@@ -1102,10 +1076,17 @@ def slack_interactions():
                             "placeholder": {"type": "plain_text", "text": "Optional comments"}
                         }, "label": {"type": "plain_text", "text": "Additional notes"}}
                     ],
-                    "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "status": status, "duration_min": duration_min, "user": user})
+                    "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "agent_state": agent_state, "duration_min": duration_min, "user": user})
                 }
             }
-            requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+            print(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
+            response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+            print(f"Slack API response status: {response.status_code}")
+            print(f"Slack API response: {response.text}")
+            if response.status_code != 200 or not response.json().get("ok"):
+                print(f"ERROR: Failed to open follow-up modal: {response.text}")
+            else:
+                print("Follow-up modal request sent to Slack successfully")
 
         return "", 200
 
@@ -1119,7 +1100,7 @@ def slack_interactions():
             metadata = json.loads(payload["view"]["private_metadata"])
             agent = metadata["agent"]
             interaction_id = metadata["interaction_id"]
-            status = metadata["status"]
+            agent_state = metadata["agent_state"]
             duration_min = float(metadata["duration_min"])
             user = metadata["user"]
             monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
@@ -1127,26 +1108,23 @@ def slack_interactions():
             reason = values["reason"]["reason_for_issue"]["value"]
             notes = values["notes"]["additional_notes"]["value"]
 
-            # Log the follow-up submission to FollowUps tab
+            # Log the follow-up submission to the weekly tab
             year = datetime.utcnow().year
             team = agent_teams.get(agent, "Unknown Team")
             log_to_followups(
-                event_type="followup_submit",
                 agent=agent,
                 timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
                 duration_min=duration_min,
                 interaction_id=interaction_id,
-                direction="Unknown",
-                status=status,
+                agent_state=agent_state,
                 campaign="",
-                alert_type=status,
                 user=user,
                 monitoring=monitoring,
                 action=action,
                 reason=reason,
                 notes=notes
             )
-            print(f"Logged follow-up submission for {agent}: {status}")
+            print(f"Logged follow-up submission for {agent}: {agent_state}")
 
         elif callback_id == "weekly_update_modal":
             print("Handling weekly_update_modal")
@@ -1167,7 +1145,7 @@ def slack_interactions():
             user = payload["user"]["username"].replace(".", " ").title()
             week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
 
-            # Log to Google Sheet
+            # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
             year = start_date.year
             sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
             if sheets_service_info:
