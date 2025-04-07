@@ -15,13 +15,24 @@ app = Flask(__name__)
 # ========== ENV VARS ==========
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
-SHEET_ID = os.environ["SHEET_ID"]
 SCOPES = json.loads(os.environ.get("GOOGLE_SHEETS_SCOPES", '["https://www.googleapis.com/auth/spreadsheets"]'))
 
-# Map years to spreadsheet IDs
-SPREADSHEET_IDS = {
-    2025: os.environ["SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
+# Map years to spreadsheet IDs for dispositions
+DISPOSITION_SPREADSHEET_IDS = {
+    2025: os.environ["DISPOSITION_SHEET_ID"],
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
+}
+
+# Map years to spreadsheet IDs for follow-ups
+FOLLOWUP_SPREADSHEET_IDS = {
+    2025: os.environ["FOLLOWUP_SHEET_ID"],
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
+}
+
+# Map years to spreadsheet IDs for weekly updates
+WEEKLY_UPDATE_SPREADSHEET_IDS = {
+    2025: os.environ["WEEKLY_UPDATE_SHEET_ID"],
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
 }
 
 # Handle Google service account JSON
@@ -47,27 +58,44 @@ if not GOOGLE_SERVICE_ACCOUNT_JSON or not isinstance(GOOGLE_SERVICE_ACCOUNT_JSON
     print("WARNING: Invalid Google service account credentials")
     GOOGLE_SERVICE_ACCOUNT_JSON = {}
 
-# Dictionary to store sheets_service instances for each year
-sheets_services = {}
+# Dictionary to store sheets_service instances for each year and type
+sheets_services = {
+    "disposition": {},
+    "followup": {},
+    "weekly_update": {}
+}
 
-def get_sheets_service(year):
-    """Get or create a sheets_service instance for the given year."""
-    if year not in sheets_services:
-        spreadsheet_id = SPREADSHEET_IDS.get(year)
+def get_sheets_service(year, sheet_type="disposition"):
+    """Get or create a sheets_service instance for the given year and sheet type."""
+    if sheet_type not in sheets_services:
+        print(f"ERROR: Invalid sheet type {sheet_type}")
+        return None
+
+    if year not in sheets_services[sheet_type]:
+        if sheet_type == "disposition":
+            spreadsheet_id = DISPOSITION_SPREADSHEET_IDS.get(year)
+        elif sheet_type == "followup":
+            spreadsheet_id = FOLLOWUP_SPREADSHEET_IDS.get(year)
+        elif sheet_type == "weekly_update":
+            spreadsheet_id = WEEKLY_UPDATE_SPREADSHEET_IDS.get(year)
+        else:
+            print(f"ERROR: Unknown sheet type {sheet_type}")
+            return None
+
         if not spreadsheet_id:
-            print(f"ERROR: No spreadsheet ID defined for year {year}")
+            print(f"ERROR: No spreadsheet ID defined for year {year} and type {sheet_type}")
             return None
 
         try:
             creds = service_account.Credentials.from_service_account_info(GOOGLE_SERVICE_ACCOUNT_JSON, scopes=SCOPES)
             sheets_service = build("sheets", "v4", credentials=creds)
-            sheets_services[year] = (sheets_service, spreadsheet_id)
-            print(f"Initialized Google Sheets service for year {year}")
+            sheets_services[sheet_type][year] = (sheets_service, spreadsheet_id)
+            print(f"Initialized Google Sheets service for year {year} and type {sheet_type}")
         except Exception as e:
-            print(f"ERROR: Failed to initialize Google Sheets for year {year}: {e}")
+            print(f"ERROR: Failed to initialize Google Sheets for year {year} and type {sheet_type}: {e}")
             return None
 
-    return sheets_services[year]
+    return sheets_services[sheet_type][year]
 
 # ========== SLACK ==========
 headers = {
@@ -156,7 +184,7 @@ def get_emoji_for_event(event_type):
         "Outgoing Wrap Up": "📝",
         "Ready": "📞",
         "Ready Outbound": "📤",
-        "Busy": "💻",  # Updated from "Handle Time"
+        "Busy": "💻",
         "Lunch": "🍽️",
         "Break": "☕",
         "Comfort Break": "🚻",
@@ -406,7 +434,7 @@ agent_teams = {
     "Felicia Randall": "Team Adriana 💎",
     "Jeanette Bantz": "Team Adriana 💎",
     "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
-    "Jessica Lopez": "Team Adriana 💎",  # Moved from Team Bee Hive
+    "Jessica Lopez": "Team Adriana 💎",  # Moved from "Team Bee Hive 🐝"
     "Nicole Coleman": "Team Adriana 💎",
     "Peggy Richardson": "Team Adriana 💎",
     "Ramona Marshall": "Team Adriana 💎",
@@ -468,7 +496,7 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
                 elif event.get("type") == "connected":
                     connected_duration = parse_duration(event.get("duration", 0))
                     if connected_duration > 8:
-                        status = "Busy"  # Updated from "Handle Time"
+                        status = "Busy"
                 if status:
                     break
             if status:
@@ -503,7 +531,7 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
     elif event_type == "channel.alerted.v1":
         status = "Ready"
     elif event_type == "channel.connected.v1":
-        status = "Busy"  # Updated from "Ready"
+        status = "Busy"
     elif event_type == "channel.connectionfailed.v1":
         status = "Device Busy"
     elif event_type == "channel.ended.v1":
@@ -529,12 +557,11 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
     event_data["alert_status"] = status
     event_data["alert_duration_min"] = duration_min
 
-    # Updated trigger conditions based on your table
     if status in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
         return True
     elif status in ["Ready", "Ready Outbound"] and duration_min > 2 and is_in_shift:
         return True
-    elif status == "Busy" and duration_min > 8:  # Updated from "Handle Time"
+    elif status == "Busy" and duration_min > 8:
         return True
     elif status == "Lunch" and duration_min > 30:
         return True
@@ -546,7 +573,7 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         return True
     elif status == "Device Busy":
         return True
-    elif status == "Idle" and duration_min > 1:  # Updated to > 1 min
+    elif status == "Idle" and duration_min > 1:
         return True
     elif status == "Away":
         return True
@@ -724,9 +751,9 @@ def vonage_events():
 def log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id):
     try:
         year = timestamp.year
-        sheets_service_info = get_sheets_service(year)
+        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
         if not sheets_service_info:
-            print(f"WARNING: Google Sheets service not available for year {year}, skipping disposition logging")
+            print(f"WARNING: Google Sheets service not available for year {year} (disposition), skipping disposition logging")
             return
 
         sheets_service, spreadsheet_id = sheets_service_info
@@ -747,9 +774,9 @@ def log_disposition(agent, disposition, timestamp, start_time, initial_direction
 def generate_disposition_summary(date):
     try:
         year = datetime.strptime(date, "%Y-%m-%d").year
-        sheets_service_info = get_sheets_service(year)
+        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
         if not sheets_service_info:
-            return f"Google Sheets service not available for year {year}"
+            return f"Google Sheets service not available for year {year} (disposition)"
 
         sheets_service, spreadsheet_id = sheets_service_info
         sheet_name = get_week_range(datetime.strptime(date, "%Y-%m-%d"))
@@ -789,9 +816,9 @@ def disposition_report():
         date = request.args.get('date', (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d"))
         summary = generate_disposition_summary(date)
         year = datetime.strptime(date, "%Y-%m-%d").year
-        sheets_service_info = get_sheets_service(year)
+        sheets_service_info = get_sheets_service(year, sheet_type="disposition")
         if not sheets_service_info:
-            return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year}"}), 500
+            return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year} (disposition)"}), 500
         _, spreadsheet_id = sheets_service_info
         export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
         blocks = [
@@ -831,7 +858,7 @@ def slack_interactions():
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
             year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year)
+            sheets_service_info = get_sheets_service(year, sheet_type="followup")
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = "FollowUps"
@@ -847,7 +874,7 @@ def slack_interactions():
                 ).execute()
                 print(f"Logged alert acknowledgment for {agent}: {status}")
             else:
-                print(f"WARNING: Could not log to Google Sheets for year {year}")
+                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
 
         elif action_id == "approve_event":
             value = payload["actions"][0]["value"]
@@ -857,7 +884,7 @@ def slack_interactions():
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
             year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year)
+            sheets_service_info = get_sheets_service(year, sheet_type="followup")
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = "FollowUps"
@@ -873,7 +900,7 @@ def slack_interactions():
                 ).execute()
                 print(f"Logged approval for {agent}: {event_type}")
             else:
-                print(f"WARNING: Could not log to Google Sheets for year {year}")
+                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
 
         elif action_id == "not_approve_event":
             value = payload["actions"][0]["value"]
@@ -886,7 +913,7 @@ def slack_interactions():
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
             year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year)
+            sheets_service_info = get_sheets_service(year, sheet_type="followup")
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = "FollowUps"
@@ -902,7 +929,7 @@ def slack_interactions():
                 ).execute()
                 print(f"Logged non-approval for {agent}: {event_type}")
             else:
-                print(f"WARNING: Could not log to Google Sheets for year {year}")
+                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
 
         elif action_id == "copy_interaction_id":
             value = payload["actions"][0]["value"]
@@ -974,7 +1001,7 @@ def slack_interactions():
             user = payload["user"]["username"].replace(".", " ").title()
 
             year = datetime.utcnow().year
-            sheets_service_info = get_sheets_service(year)
+            sheets_service_info = get_sheets_service(year, sheet_type="followup")
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = "FollowUps"
@@ -990,7 +1017,7 @@ def slack_interactions():
                 ).execute()
                 print(f"Logged follow-up to Google Sheet: {sheet_name}")
             else:
-                print(f"WARNING: Could not log to Google Sheets for year {year}")
+                print(f"WARNING: Could not log to Google Sheets for year {year} (followup)")
 
         elif callback_id == "weekly_update_modal":
             print("Handling weekly_update_modal")
@@ -1010,7 +1037,7 @@ def slack_interactions():
             week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
 
             year = start_date.year
-            sheets_service_info = get_sheets_service(year)
+            sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = f"Weekly {week}"
@@ -1033,14 +1060,7 @@ def slack_interactions():
                 ).execute()
                 print(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
             else:
-                print(f"WARNING: Could not log to Google Sheets for year {year}")
-
-            metadata = json.loads(payload["view"]["private_metadata"])
-            channel_id = metadata["channel_id"]
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ Weekly update for *{week}* submitted successfully by {user}!"}}
-            ]
-            post_slack_message(channel_id, blocks)
+                print(f"WARNING: Could not log to Google Sheets for year {year} (weekly_update)")
 
         return jsonify({"response_action": "clear"}), 200
 
@@ -1067,9 +1087,9 @@ def slack_command_daily_report():
 
     disposition_summary = generate_disposition_summary(date_for_dispositions)
     year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
-    sheets_service_info = get_sheets_service(year)
+    sheets_service_info = get_sheets_service(year, sheet_type="disposition")
     if not sheets_service_info:
-        return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year}"}), 500
+        return jsonify({"status": "error", "message": f"No spreadsheet ID defined for year {year} (disposition)"}), 500
     _, spreadsheet_id = sheets_service_info
     export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
 
@@ -1295,9 +1315,9 @@ def trigger_daily_report():
 
     disposition_summary = generate_disposition_summary(date_for_dispositions)
     year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
-    sheets_service_info = get_sheets_service(year)
+    sheets_service_info = get_sheets_service(year, sheet_type="disposition")
     if not sheets_service_info:
-        print(f"WARNING: Could not generate report - no spreadsheet ID defined for year {year}")
+        print(f"WARNING: Could not generate report - no spreadsheet ID defined for year {year} (disposition)")
         return
     _, spreadsheet_id = sheets_service_info
     export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
