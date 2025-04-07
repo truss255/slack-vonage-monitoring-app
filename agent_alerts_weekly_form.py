@@ -15,7 +15,6 @@ from requests.packages.urllib3.util.retry import Retry
 app = Flask(__name__)
 
 # ========== LOGGING SETUP ==========
-# Configure logging to both console and file
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -39,7 +38,7 @@ if missing_vars:
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 ALERT_CHANNEL_ID = os.environ["ALERT_CHANNEL_ID"]
-BOT_ERROR_CHANNEL_ID = os.environ.get("BOT_ERROR_CHANNEL_ID", ALERT_CHANNEL_ID)  # Fallback to ALERT_CHANNEL_ID if not set
+BOT_ERROR_CHANNEL_ID = os.environ.get("BOT_ERROR_CHANNEL_ID", ALERT_CHANNEL_ID)
 SCOPES = json.loads(os.environ.get("GOOGLE_SHEETS_SCOPES", '["https://www.googleapis.com/auth/spreadsheets"]'))
 
 # Map years to spreadsheet IDs for weekly updates
@@ -48,7 +47,7 @@ WEEKLY_UPDATE_SPREADSHEET_IDS = {
     2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
 }
 
-# Map years to spreadsheet IDs for follow-ups (used for both real-time alerts and follow-up submissions)
+# Map years to spreadsheet IDs for follow-ups
 FOLLOWUP_SPREADSHEET_IDS = {
     2025: os.environ["FOLLOWUP_SHEET_ID"],
     2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
@@ -84,11 +83,13 @@ sheets_services = {
 }
 
 # Dictionary to store the current Presence State and timestamp for each agent
-# Clear on startup to start fresh
 agent_presence_states = {}
 
 # Dictionary to track the last alert sent for each agent and state (for deduplication)
 last_alerts = {}
+
+# Dictionary to track the timestamp when each agent entered a specific state
+agent_state_timestamps = {}
 
 ET = pytz.timezone('America/New_York')
 logger.info(f"Initialized agent_presence_states as empty dictionary at startup: {datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(ET).isoformat()}")
@@ -131,10 +132,10 @@ headers = {
 
 # Setup retry strategy for Slack API calls
 session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+retries = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
-def post_slack_message(channel, blocks, thread_ts=None, retry_count=3):
+def post_slack_message(channel, blocks, thread_ts=None, retry_count=5):
     """Post a message to Slack with retry logic for rate-limiting."""
     current_time_et = datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(ET)
     logger.info(f"Attempting to post to Slack channel: {channel} at {current_time_et.isoformat()}")
@@ -147,14 +148,13 @@ def post_slack_message(channel, blocks, thread_ts=None, retry_count=3):
             response = session.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
             logger.info(f"Slack API response status: {response.status_code}")
             logger.info(f"Slack API response: {response.text}")
-            if response.status_code == 429:  # Rate-limited
+            if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", 1))
                 logger.warning(f"Rate-limited by Slack, retrying after {retry_after} seconds")
                 time.sleep(retry_after)
                 continue
             if response.status_code != 200:
                 logger.error(f"Failed to post to Slack: {response.status_code} - {response.text}")
-                # Post error to bot error channel
                 error_blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to post to Slack channel {channel}: {response.status_code} - {response.text}"}}
                 ]
@@ -165,9 +165,8 @@ def post_slack_message(channel, blocks, thread_ts=None, retry_count=3):
         except Exception as e:
             logger.error(f"ERROR: Failed to post to Slack: {e}")
             if attempt < retry_count - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt)
                 continue
-            # Post error to bot error channel
             error_blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to post to Slack channel {channel}: {str(e)}"}}
             ]
@@ -231,7 +230,7 @@ agent_teams = {
     "Felicia Randall": "Team Adriana 💎",
     "Jeanette Bantz": "Team Adriana 💎",
     "Jesse Lorenzana Escarfullery": "Team Adriana 💎",
-    "Jessica Lopez": "Team Adriana 💎",  # Moved from "Team Bee Hive 🐝"
+    "Jessica Lopez": "Team Adriana 💎",
     "Nicole Coleman": "Team Adriana 💎",
     "Peggy Richardson": "Team Adriana 💎",
     "Ramona Marshall": "Team Adriana 💎",
@@ -505,26 +504,38 @@ def is_within_shift(agent, timestamp):
         return False
 
 # ========== DURATION PARSING ==========
-def parse_duration(duration):
+def parse_duration(duration_ms):
     try:
-        duration_ms = int(duration)
         duration_min = duration_ms / 1000 / 60  # Convert ms to minutes
         return duration_min
     except (ValueError, TypeError) as e:
         logger.error(f"ERROR in parse_duration: {e}")
         return 0
 
+# Calculate duration since the agent entered the current state
+def get_event_duration(agent, current_state, current_timestamp):
+    try:
+        state_key = f"{agent}:{current_state}"
+        if state_key not in agent_state_timestamps:
+            logger.info(f"Agent {agent} has no recorded timestamp for state {current_state}")
+            return 0
+
+        start_timestamp = agent_state_timestamps[state_key]
+        duration_ms = (current_timestamp - start_timestamp).total_seconds() * 1000
+        logger.info(f"Calculated duration for {agent} in state {current_state}: {duration_ms} ms")
+        return duration_ms
+    except Exception as e:
+        logger.error(f"ERROR in get_event_duration for agent {agent}: {e}")
+        return 0
+
 # ========== WEEKLY TAB HELPER ==========
 def get_weekly_tab_name(timestamp):
     """Determine the weekly tab name (e.g., 'Weekly Apr 1 - Apr 7') based on the timestamp."""
     try:
-        # Find the Monday of the current week (assuming weeks start on Monday)
         date = timestamp.date()
-        days_to_monday = (date.weekday() - 0) % 7  # 0 is Monday
+        days_to_monday = (date.weekday() - 0) % 7
         monday = date - timedelta(days=days_to_monday)
-        # Find the Sunday of the same week
         sunday = monday + timedelta(days=6)
-        # Format the tab name
         tab_name = f"Weekly {monday.strftime('%b %-d')} - {sunday.strftime('%b %-d')}"
         return tab_name
     except Exception as e:
@@ -552,7 +563,7 @@ def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, header
         return sheet_name
 
 # ========== LOGGING TO WEEKLY TAB IN FOLLOWUPS SPREADSHEET ==========
-def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign, user=None, monitoring=None, action=None, reason=None, notes=None, approval_decision=None, approved_by=None):
+def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign, user=None, monitoring=None, action=None, reason=None, notes=None, approval_decision=None, approved_by=None, status="Open"):
     try:
         year = timestamp.year
         sheets_service_info = get_sheets_service(year, sheet_type="followup")
@@ -561,21 +572,18 @@ def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state
             return
 
         sheets_service, spreadsheet_id = sheets_service_info
-        # Determine the weekly tab name (e.g., "Weekly Apr 1 - Apr 7")
         sheet_name = get_weekly_tab_name(timestamp)
         headers = [
             "Timestamp", "Agent Name", "Agent State", "Duration (min)", "Interaction ID",
             "Campaign", "Team", "Assigned To (Lead)", "Monitoring Method",
-            "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By (Slack)"
+            "Follow-Up Action", "Reason for Issue", "Additional Notes", "Approval Decision", "Approved By (Slack)", "Status"
         ]
         get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
         team = agent_teams.get(agent, "Unknown Team")
 
-        # Convert timestamp to EDT for display
         timestamp_et = timestamp.astimezone(ET)
         formatted_timestamp = timestamp_et.strftime("%Y-%m-%d %I:%M:%S %p")
 
-        # Determine if Interaction ID and Campaign are applicable for this state
         states_with_interaction = ["Busy", "Wrap", "Outgoing Wrap Up"]
         interaction_id_value = interaction_id if agent_state in states_with_interaction else "Not Applicable for This State"
         campaign_value = campaign if agent_state in states_with_interaction else "Not Applicable for This State"
@@ -584,7 +592,7 @@ def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state
             formatted_timestamp, agent, agent_state, duration_min, interaction_id_value,
             campaign_value, team, user if user else "", monitoring if monitoring else "",
             action if action else "", reason if reason else "", notes if notes else "",
-            approval_decision if approval_decision else "", approved_by if approved_by else ""
+            approval_decision if approval_decision else "", approved_by if approved_by else "", status
         ]]
         sheets_service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
@@ -592,34 +600,13 @@ def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state
             valueInputOption="USER_ENTERED",
             body={"values": values}
         ).execute()
-        logger.info(f"Logged to {sheet_name} tab for {agent} at {formatted_timestamp}")
+        logger.info(f"Logged to {sheet_name} tab for {agent} at {formatted_timestamp} with status {status}")
     except Exception as e:
         logger.error(f"Failed to log to {sheet_name} tab: {e}")
-        # Post error to bot error channel
         error_blocks = [
             {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to log to Google Sheets (sheet: {sheet_name}): {str(e)}"}}
         ]
         session.post("https://slack.com/api/chat.postMessage", headers=headers, json={"channel": BOT_ERROR_CHANNEL_ID, "blocks": error_blocks})
-
-# Calculate duration since last state change for presence alerts
-def get_event_duration(agent, current_timestamp, current_agent_state):
-    try:
-        # Check if the agent has a recorded presence state
-        if agent not in agent_presence_states:
-            logger.info(f"Agent {agent} has no recorded presence state")
-            return 0
-
-        last_state, last_timestamp = agent_presence_states[agent]
-        if last_state == current_agent_state:
-            logger.info(f"Agent {agent} state unchanged: {last_state}")
-            return 0  # No duration if the state hasn't changed
-
-        duration_ms = (current_timestamp - last_timestamp).total_seconds() * 1000
-        logger.info(f"Calculated duration for {agent}: {duration_ms} ms")
-        return duration_ms
-    except Exception as e:
-        logger.error(f"ERROR in get_event_duration for agent {agent}: {e}")
-        return 0
 
 # ========== AGENT STATE RULES ==========
 def should_trigger_alert(agent_state, duration_min, is_in_shift, event_data=None):
@@ -641,7 +628,7 @@ def should_trigger_alert(agent_state, duration_min, is_in_shift, event_data=None
             return True
         elif agent_state == "Logged Out" and is_in_shift:
             return True
-        elif agent_state in ["Device Busy", "Device Unreachable", "Fault", "Away", "Extended Away", "In Meeting", "Paperwork", "Team Meeting", "Training"]:
+        elif agent_state in ["Device Busy", "Device Unreachable", "Fault", "In Meeting", "Paperwork", "Team Meeting", "Training"]:
             return True
 
         return False
@@ -665,8 +652,6 @@ def get_emoji_for_event(agent_state):
         "Device Busy": "💻",
         "Device Unreachable": "🔌",
         "Fault": "⚠️",
-        "Away": "🚶‍♂️",
-        "Extended Away": "🚶‍♂️",
         "In Meeting": "👥",
         "Paperwork": "🗂️",
         "Team Meeting": "👥",
@@ -680,7 +665,6 @@ def health_check():
     """Health check endpoint to verify the application's status."""
     health_status = {"status": "healthy", "checks": {}}
 
-    # Check Slack API connectivity
     try:
         response = session.post("https://slack.com/api/auth.test", headers=headers)
         if response.status_code == 200 and response.json().get("ok"):
@@ -692,7 +676,6 @@ def health_check():
         health_status["checks"]["slack"] = f"unhealthy: {str(e)}"
         health_status["status"] = "unhealthy"
 
-    # Check Google Sheets connectivity
     try:
         year = datetime.utcnow().year
         sheets_service_info = get_sheets_service(year, sheet_type="followup")
@@ -725,7 +708,6 @@ def vonage_events():
             logger.error("Missing event type in Vonage payload")
             return jsonify({"status": "error", "message": "Missing event type"}), 400
 
-        # Skip processing for channel.alerted.v1 and channel.connected.v1
         if event_type in ["channel.alerted.v1", "channel.connected.v1"]:
             logger.info(f"Skipping event type {event_type} as per requirements")
             return jsonify({"status": "skipped", "message": f"Event type {event_type} not processed"}), 200
@@ -818,19 +800,51 @@ def vonage_events():
                     agent_state = "Idle (Outbound)"
                 else:
                     agent_state = "Idle"
-            elif presence_type == "away":
-                agent_state = "Away"
-            elif presence_type == "extended_away":
-                agent_state = "Extended Away"
             elif presence_type == "team_meeting":
                 agent_state = "Team Meeting"
 
             # Update the agent's presence state in memory
             if agent_state:
                 agent_presence_states[agent] = (agent_state, timestamp)
+                state_key = f"{agent}:{agent_state}"
+                agent_state_timestamps[state_key] = timestamp
                 logger.info(f"Updated presence state for {agent}: {agent_state} at {timestamp.astimezone(ET).isoformat()}")
 
-        # If not a presence change, check for specific channel events
+        # Handle activity record events for state tracking
+        elif event_type == "channel.activityrecord.v0":
+            interaction = event_data.get("interaction", {})
+            state = interaction.get("state", "").lower()
+            start_time_str = interaction.get("startTime")
+            end_time_str = interaction.get("endTime")
+
+            if state:
+                if state == "wrap":
+                    agent_state = "Wrap"
+                elif state == "busy":
+                    agent_state = "Busy"
+                elif state == "ready":
+                    agent_state = "Ready"
+
+            if agent_state and start_time_str:
+                try:
+                    start_timestamp = parse(start_time_str).replace(tzinfo=pytz.UTC)
+                    state_key = f"{agent}:{agent_state}"
+                    agent_state_timestamps[state_key] = start_timestamp
+                    logger.info(f"Updated state timestamp for {agent} in state {agent_state}: {start_timestamp.astimezone(ET).isoformat()}")
+                except Exception as e:
+                    logger.error(f"Failed to parse startTime {start_time_str}: {e}")
+
+            if end_time_str:
+                try:
+                    end_timestamp = parse(end_time_str).replace(tzinfo=pytz.UTC)
+                    state_key = f"{agent}:{agent_state}"
+                    if state_key in agent_state_timestamps:
+                        del agent_state_timestamps[state_key]
+                        logger.info(f"Cleared state timestamp for {agent} in state {agent_state} at {end_timestamp.astimezone(ET).isoformat()}")
+                except Exception as e:
+                    logger.error(f"Failed to parse endTime {end_time_str}: {e}")
+
+        # If not a presence change or activity record, check for specific channel events
         if not agent_state:
             if event_type == "channel.connectionfailed.v1":
                 agent_state = "Device Busy"
@@ -840,8 +854,6 @@ def vonage_events():
                 agent_state = "Break"
             elif event_type == "channel.interrupted.v1":
                 agent_state = "Break"
-            elif event_type == "channel.parked.v1":
-                agent_state = "Away"
             elif event_type == "channel.resumed.v1":
                 agent_state = "Ready"
             elif event_type == "channel.retrieved.v1":
@@ -859,12 +871,21 @@ def vonage_events():
             agent_state = "Unknown"
             logger.warning(f"Agent state could not be determined for {agent}, defaulting to Unknown")
 
-        # Calculate duration based on the last presence state change
-        duration_ms = get_event_duration(agent, timestamp, agent_state)
+        # Update the state timestamp if not already set by activity record
+        state_key = f"{agent}:{agent_state}"
+        if state_key not in agent_state_timestamps:
+            agent_state_timestamps[state_key] = timestamp
+            logger.info(f"Set initial timestamp for {agent} in state {agent_state}: {timestamp.astimezone(ET).isoformat()}")
+
+        # Calculate duration based on the time the agent entered the current state
+        duration_ms = get_event_duration(agent, agent_state, timestamp)
         duration_min = parse_duration(duration_ms)
 
-        if event_type in ["channel.ended.v1", "channel.disconnected.v1", "channel.activityrecord.v0", "interaction.detailrecord.v0"]:
+        if event_type in ["channel.ended.v1", "channel.disconnected.v1", "interaction.detailrecord.v0"]:
             logger.info(f"Skipping notification for event type: {event_type}")
+            if state_key in agent_state_timestamps:
+                del agent_state_timestamps[state_key]
+                logger.info(f"Cleared state timestamp for {agent} in state {agent_state}")
             return jsonify({"status": "skipped", "message": f"Notifications disabled for {event_type}"}), 200
 
         is_in_shift = is_within_shift(agent, timestamp)
@@ -874,8 +895,8 @@ def vonage_events():
         alert_key = f"{agent}:{agent_state}"
         if alert_key in last_alerts:
             last_alert_time = last_alerts[alert_key]
-            time_since_last_alert = (timestamp - last_alert_time).total_seconds() / 60  # in minutes
-            if time_since_last_alert < 5:  # Avoid sending the same alert within 5 minutes
+            time_since_last_alert = (timestamp - last_alert_time).total_seconds() / 60
+            if time_since_last_alert < 5:
                 logger.info(f"Skipping duplicate alert for {agent}: {agent_state} (last sent {time_since_last_alert:.2f} minutes ago)")
                 return jsonify({"status": "skipped", "message": "Duplicate alert skipped"}), 200
 
@@ -885,10 +906,10 @@ def vonage_events():
             emoji = get_emoji_for_event(agent_state)
             team = agent_teams.get(agent, "Unknown Team")
             vonage_link = "https://nam.newvoicemedia.com/CallCentre/portal/interactionsearch"
-            states_without_interaction = ["Idle", "Idle (Outbound)", "Device Busy", "Device Unreachable", "Fault", "Away", "Break", "Comfort Break", "Extended Away", "In Meeting", "Lunch", "Paperwork", "Team Meeting", "Training", "Logged Out"]
+            states_without_interaction = ["Idle", "Idle (Outbound)", "Device Busy", "Device Unreachable", "Fault", "In Meeting", "Paperwork", "Team Meeting", "Training", "Logged Out"]
 
             # Log the alert to the weekly tab
-            log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign)
+            log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign, status="Open")
 
             if agent_state in ["Training", "In Meeting", "Paperwork", "Team Meeting"]:
                 blocks = [
@@ -926,7 +947,7 @@ def vonage_events():
         return jsonify({"status": "posted"}), 200
     except Exception as e:
         logger.error(f"ERROR in /vonage-events: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 200  # Return 200 to Vonage to prevent it from stopping event delivery
+        return jsonify({"status": "error", "message": str(e)}), 200
 
 # ========== SLACK COMMANDS ==========
 @app.route("/slack/commands/weekly_update_form", methods=["GET", "POST"])
@@ -1084,7 +1105,6 @@ def slack_command_weekly_update_form():
         logger.info(f"Slack API response: {response.text}")
         if response.status_code != 200 or not response.json().get("ok"):
             logger.error(f"Failed to open modal: {response.text}")
-            # Post error to bot error channel
             error_blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open weekly update modal: {response.text}"}}
             ]
@@ -1134,7 +1154,8 @@ def slack_interactions():
                     agent_state=agent_state,
                     campaign=campaign,
                     user=user,
-                    approval_decision="Assigned"
+                    approval_decision="Assigned",
+                    status="Assigned"
                 )
                 logger.info(f"Logged 'Assigned to Me' action for {agent}: {agent_state}")
 
@@ -1158,7 +1179,8 @@ def slack_interactions():
                     campaign=campaign,
                     user=user,
                     approval_decision="Approved",
-                    approved_by=user
+                    approved_by=user,
+                    status="Resolved"
                 )
                 logger.info(f"Logged approval for {agent}: {agent_state}")
 
@@ -1185,7 +1207,8 @@ def slack_interactions():
                     campaign=campaign,
                     user=user,
                     approval_decision="Not Approved",
-                    approved_by=user
+                    approved_by=user,
+                    status="Assigned"
                 )
                 logger.info(f"Logged non-approval for {agent}: {agent_state}")
 
@@ -1205,6 +1228,11 @@ def slack_interactions():
                 duration_min = float(duration_min)
                 trigger_id = payload["trigger_id"]
                 logger.debug(f"Trigger ID: {trigger_id}")
+
+                # Log the time difference to check for trigger_id expiration
+                event_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+                logger.info(f"Time since event: {(event_time - event_time).total_seconds()} seconds (should be < 30 seconds for trigger_id to be valid)")
+
                 modal = {
                     "trigger_id": trigger_id,
                     "view": {
@@ -1212,7 +1240,12 @@ def slack_interactions():
                         "callback_id": "followup_submit",
                         "title": {"type": "plain_text", "text": "Follow-Up"},
                         "submit": {"type": "plain_text", "text": "Submit"},
+                        "close": {"type": "plain_text", "text": "Close"},
                         "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": f"*Follow-Up for {agent} - {agent_state} Alert*"}
+                            },
                             {"type": "input", "block_id": "monitoring", "element": {
                                 "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
                                 "options": [
@@ -1225,14 +1258,17 @@ def slack_interactions():
                             }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
                             {"type": "input", "block_id": "action", "element": {
                                 "type": "plain_text_input", "action_id": "action_taken",
+                                "multiline": True,
                                 "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
                             }, "label": {"type": "plain_text", "text": "What did you do?"}},
                             {"type": "input", "block_id": "reason", "element": {
                                 "type": "plain_text_input", "action_id": "reason_for_issue",
+                                "multiline": True,
                                 "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
                             }, "label": {"type": "plain_text", "text": "Reason for issue"}},
                             {"type": "input", "block_id": "notes", "element": {
                                 "type": "plain_text_input", "action_id": "additional_notes",
+                                "multiline": True,
                                 "placeholder": {"type": "plain_text", "text": "Optional comments"}
                             }, "label": {"type": "plain_text", "text": "Additional notes"}}
                         ],
@@ -1240,25 +1276,27 @@ def slack_interactions():
                     }
                 }
                 logger.info(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
-                # Retry logic for views.open
-                for attempt in range(3):
+                for attempt in range(5):
                     try:
                         response = session.post("https://slack.com/api/views.open", headers=headers, json=modal)
-                        logger.info(f"Slack API response status: {response.status_code}")
-                        logger.info(f"Slack API response: {response.text}")
-                        if response.status_code == 429:  # Rate-limited
+                        logger.info(f"Attempt {attempt + 1}: Slack API response status: {response.status_code}")
+                        logger.info(f"Attempt {attempt + 1}: Slack API response: {response.text}")
+                        if response.status_code == 429:
                             retry_after = int(response.headers.get("Retry-After", 1))
                             logger.warning(f"Rate-limited by Slack, retrying after {retry_after} seconds")
                             time.sleep(retry_after)
                             continue
                         if response.status_code != 200 or not response.json().get("ok"):
                             logger.error(f"Failed to open follow-up modal: {response.text}")
-                            # Post a fallback message to the user
+                            error_message = response.json().get("error", "Unknown error")
+                            if error_message == "invalid_trigger":
+                                logger.error("Trigger ID expired or invalid. Ensure the button is clicked within 30 seconds.")
+                            elif error_message == "missing_scope":
+                                logger.error("Missing views:write scope. Please add this scope to the Slack bot token.")
                             fallback_blocks = [
-                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Please try again."}}
+                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {error_message}. Please try again or contact support."}}
                             ]
                             session.post(response_url, json={"replace_original": False, "blocks": fallback_blocks})
-                            # Post error to bot error channel
                             error_blocks = [
                                 {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open follow-up modal for {agent}: {response.text}"}}
                             ]
@@ -1268,15 +1306,13 @@ def slack_interactions():
                         break
                     except Exception as e:
                         logger.error(f"ERROR: Failed to open follow-up modal: {e}")
-                        if attempt < 2:
-                            time.sleep(2 ** attempt)  # Exponential backoff
+                        if attempt < 4:
+                            time.sleep(2 ** attempt)
                             continue
-                        # Post a fallback message to the user
                         fallback_blocks = [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Please try again."}}
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {str(e)}. Please try again or contact support."}}
                         ]
                         session.post(response_url, json={"replace_original": False, "blocks": fallback_blocks})
-                        # Post error to bot error channel
                         error_blocks = [
                             {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open follow-up modal for {agent}: {str(e)}"}}
                         ]
@@ -1315,7 +1351,8 @@ def slack_interactions():
                         monitoring=monitoring,
                         action=action,
                         reason=reason,
-                        notes=notes
+                        notes=notes,
+                        status="Resolved"
                     )
                     logger.info(f"Logged follow-up submission for {agent}: {agent_state}")
 
@@ -1338,7 +1375,7 @@ def slack_interactions():
                     user = payload["user"]["username"].replace(".", " ").title()
                     week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
 
-                    # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
+                                     # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
                     year = start_date.year
                     sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
                     if sheets_service_info:
@@ -1376,14 +1413,14 @@ def slack_interactions():
                         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
                         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
                     ]
-                    post_slack_message(channel_id, summary_blocks)
+                    post_slack_message(ALERT_CHANNEL_ID, summary_blocks)  # Post to ALERT_CHANNEL_ID for visibility
 
-                    # Post the success message
+                    # Post the success message to ALERT_CHANNEL_ID
                     success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
                     success_blocks = [
                         {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
                     ]
-                    post_slack_message(channel_id, success_blocks)
+                    post_slack_message(ALERT_CHANNEL_ID, success_blocks)  # Changed to ALERT_CHANNEL_ID
 
                 return jsonify({"response_action": "clear"}), 200
 
