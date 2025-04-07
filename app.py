@@ -544,9 +544,9 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         return True
     elif status in ["Device Busy", "Away"]:
         return True
-    elif status == "Idle" and duration_min >= 22:  # Updated condition
+    elif status == "Idle" and duration_min >= 22:
         return True
-    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, event_data.get("agent"), timestamp):
+    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, event_data.get("agent"), event_data.get("timestamp")):
         return True
 
     return False
@@ -604,7 +604,7 @@ def vonage_events():
         interaction_id = data.get("subject", data.get("data", {}).get("interaction", {}).get("interactionId", "-"))
 
         event_data = data.get("data", {})
-        event_data["timestamp"] = timestamp  # Store for later use
+        event_data["timestamp"] = timestamp
 
         # Extract agent name
         agent = None
@@ -640,7 +640,7 @@ def vonage_events():
             print(f"WARNING: Could not determine agent name from Vonage payload. Agent ID: {agent_id}")
             return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
 
-        event_data["agent"] = agent  # Store agent name in event_data
+        event_data["agent"] = agent
 
         # Extract duration
         duration_ms = 0
@@ -710,6 +710,8 @@ def vonage_events():
                     {"type": "actions", "elements": buttons}
                 ]
             post_slack_message(ALERT_CHANNEL_ID, blocks)
+        else:
+            print(f"Alert not triggered for {agent}: Status={status}, Duration={duration_min}, In Shift={is_in_shift}")
         return jsonify({"status": "posted"}), 200
     except Exception as e:
         print(f"Error processing Vonage event: {e}")
@@ -1193,6 +1195,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "top_support_input",
+                            "multiline": True,  # Changed to multi-line
                             "placeholder": {"type": "plain_text", "text": "How are you supporting top performers?"}
                         },
                         "label": {"type": "plain_text", "text": "Support Actions for Top Performers"}
@@ -1214,6 +1217,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "bottom_actions_input",
+                            "multiline": True,  # Changed to multi-line
                             "placeholder": {"type": "plain_text", "text": "Describe coaching, follow-up, etc."}
                         },
                         "label": {"type": "plain_text", "text": "Support Actions for Bottom Performers"}
@@ -1224,6 +1228,7 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "improvement_plan_input",
+                            "multiline": True,  # Changed to multi-line
                             "placeholder": {"type": "plain_text", "text": "Are they improving? What's the plan?"}
                         },
                         "label": {"type": "plain_text", "text": "Improvement Plan"}
