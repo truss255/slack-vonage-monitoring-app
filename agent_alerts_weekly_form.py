@@ -249,6 +249,7 @@ agent_teams = {
 # Updated Campaign mapping dictionary
 CAMPAIGN_MAPPING = {
     "+13234547738": "SETC Incoming Calls",
+    "+16822725314": "SETC Incoming Calls",  # Matches the number in the screenshot
     "+413122787476": "Maui Wildfire",
     "+313122192786": "Camp Lejeune",
     "+213122195489": "Depo-Provera",
@@ -1134,14 +1135,14 @@ def slack_interactions():
                 value = payload["actions"][0]["value"]
                 _, agent, campaign, agent_state, duration_min = value.split("|")
                 duration_min = float(duration_min)
+                thread_ts = payload["message"]["ts"]
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
                     {"type": "actions", "elements": [
                         {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|{duration_min}", "action_id": "open_followup"}
                     ]}
                 ]
-                response = session.post(response_url, json={"replace_original": True, "blocks": blocks})
-                logger.info(f"Updated Slack message with Follow-Up button: {response.status_code} - {response.text}")
+                post_slack_message(ALERT_CHANNEL_ID, blocks, thread_ts=thread_ts)
 
                 # Log the "Assigned to Me" action to the weekly tab
                 year = datetime.utcnow().year
@@ -1162,10 +1163,11 @@ def slack_interactions():
             elif action_id == "approve_event":
                 value = payload["actions"][0]["value"]
                 _, agent, campaign, agent_state = value.split("|")
+                thread_ts = payload["message"]["ts"]
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{agent_state} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
                 ]
-                session.post(response_url, json={"replace_original": True, "blocks": blocks})
+                post_slack_message(ALERT_CHANNEL_ID, blocks, thread_ts=thread_ts)
 
                 # Log the approval to the weekly tab
                 year = datetime.utcnow().year
@@ -1187,13 +1189,14 @@ def slack_interactions():
             elif action_id == "not_approve_event":
                 value = payload["actions"][0]["value"]
                 _, agent, campaign, agent_state = value.split("|")
+                thread_ts = payload["message"]["ts"]
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
                     {"type": "actions", "elements": [
                         {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|0", "action_id": "open_followup"}
                     ]}
                 ]
-                session.post(response_url, json={"replace_original": True, "blocks": blocks})
+                post_slack_message(ALERT_CHANNEL_ID, blocks, thread_ts=thread_ts)
 
                 # Log the non-approval to the weekly tab
                 year = datetime.utcnow().year
@@ -1214,10 +1217,11 @@ def slack_interactions():
 
             elif action_id == "copy_interaction_id":
                 value = payload["actions"][0]["value"]
+                thread_ts = payload["message"]["ts"]
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
                 ]
-                session.post(response_url, json={"replace_original": False, "blocks": blocks})
+                post_slack_message(ALERT_CHANNEL_ID, blocks, thread_ts=thread_ts)
                 logger.info(f"User {user} requested to copy Interaction ID: {value}")
 
             elif action_id == "open_followup":
@@ -1227,11 +1231,21 @@ def slack_interactions():
                 _, agent, campaign, agent_state, duration_min = value.split("|")
                 duration_min = float(duration_min)
                 trigger_id = payload["trigger_id"]
+                thread_ts = payload["message"]["ts"]
                 logger.debug(f"Trigger ID: {trigger_id}")
 
                 # Log the time difference to check for trigger_id expiration
                 event_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
                 logger.info(f"Time since event: {(event_time - event_time).total_seconds()} seconds (should be < 30 seconds for trigger_id to be valid)")
+
+                # Ensure headers is defined
+                global headers
+                if 'headers' not in globals() or not headers:
+                    logger.error("Headers variable not defined. Using default headers.")
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
 
                 modal = {
                     "trigger_id": trigger_id,
@@ -1276,7 +1290,7 @@ def slack_interactions():
                     }
                 }
                 logger.info(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
-                for attempt in range(5):
+                for attempt in range(10):
                     try:
                         response = session.post("https://slack.com/api/views.open", headers=headers, json=modal)
                         logger.info(f"Attempt {attempt + 1}: Slack API response status: {response.status_code}")
@@ -1292,11 +1306,11 @@ def slack_interactions():
                             if error_message == "invalid_trigger":
                                 logger.error("Trigger ID expired or invalid. Ensure the button is clicked within 30 seconds.")
                             elif error_message == "missing_scope":
-                                logger.error("Missing views:write scope. Please add this scope to the Slack bot token.")
+                                logger.error("Missing modals:write scope. Please add this scope to the Slack bot token.")
                             fallback_blocks = [
-                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {error_message}. Please try again or contact support."}}
+                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {error_message}. Please use this [manual follow-up form](https://forms.gle/example) to submit your follow-up."}}
                             ]
-                            session.post(response_url, json={"replace_original": False, "blocks": fallback_blocks})
+                            post_slack_message(ALERT_CHANNEL_ID, fallback_blocks, thread_ts=thread_ts)
                             error_blocks = [
                                 {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open follow-up modal for {agent}: {response.text}"}}
                             ]
@@ -1306,85 +1320,95 @@ def slack_interactions():
                         break
                     except Exception as e:
                         logger.error(f"ERROR: Failed to open follow-up modal: {e}")
-                        if attempt < 4:
+                        if attempt < 9:
                             time.sleep(2 ** attempt)
                             continue
                         fallback_blocks = [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {str(e)}. Please try again or contact support."}}
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {str(e)}. Please use this [manual follow-up form](https://forms.gle/example) to submit your follow-up."}}
                         ]
-                        session.post(response_url, json={"replace_original": False, "blocks": fallback_blocks})
+                        post_slack_message(ALERT_CHANNEL_ID, fallback_blocks, thread_ts=thread_ts)
                         error_blocks = [
                             {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open follow-up modal for {agent}: {str(e)}"}}
                         ]
                         session.post("https://slack.com/api/chat.postMessage", headers=headers, json={"channel": BOT_ERROR_CHANNEL_ID, "blocks": error_blocks})
                 return "", 200
 
-            elif payload["type"] == "view_submission":
-                callback_id = payload["view"]["callback_id"]
-                logger.info(f"Processing view submission with callback_id: {callback_id}")
+        elif payload["type"] == "view_submission":
+            callback_id = payload["view"]["callback_id"]
+            logger.info(f"Processing view submission with callback_id: {callback_id}")
 
-                if callback_id == "followup_submit":
-                    logger.info("Handling followup_submit")
-                    values = payload["view"]["state"]["values"]
-                    metadata = json.loads(payload["view"]["private_metadata"])
-                    agent = metadata["agent"]
-                    interaction_id = metadata["interaction_id"]
-                    agent_state = metadata["agent_state"]
-                    duration_min = float(metadata["duration_min"])
-                    user = metadata["user"]
-                    monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
-                    action = values["action"]["action_taken"]["value"]
-                    reason = values["reason"]["reason_for_issue"]["value"]
-                    notes = values["notes"]["additional_notes"]["value"]
+            if callback_id == "followup_submit":
+                logger.info("Handling followup_submit")
+                values = payload["view"]["state"]["values"]
+                metadata = json.loads(payload["view"]["private_metadata"])
+                agent = metadata["agent"]
+                interaction_id = metadata["interaction_id"]
+                agent_state = metadata["agent_state"]
+                duration_min = float(metadata["duration_min"])
+                user = metadata["user"]
+                monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
+                action = values["action"]["action_taken"]["value"]
+                reason = values["reason"]["reason_for_issue"]["value"]
+                notes = values["notes"]["additional_notes"]["value"]
 
-                    # Log the follow-up submission to the weekly tab
-                    year = datetime.utcnow().year
-                    team = agent_teams.get(agent, "Unknown Team")
-                    log_to_followups(
-                        agent=agent,
-                        timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                        duration_min=duration_min,
-                        interaction_id=interaction_id,
-                        agent_state=agent_state,
-                        campaign="",
-                        user=user,
-                        monitoring=monitoring,
-                        action=action,
-                        reason=reason,
-                        notes=notes,
-                        status="Resolved"
-                    )
-                    logger.info(f"Logged follow-up submission for {agent}: {agent_state}")
+                # Log the follow-up submission to the weekly tab
+                year = datetime.utcnow().year
+                team = agent_teams.get(agent, "Unknown Team")
+                log_to_followups(
+                    agent=agent,
+                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                    duration_min=duration_min,
+                    interaction_id=interaction_id,
+                    agent_state=agent_state,
+                    campaign="",
+                    user=user,
+                    monitoring=monitoring,
+                    action=action,
+                    reason=reason,
+                    notes=notes,
+                    status="Resolved"
+                )
+                logger.info(f"Logged follow-up submission for {agent}: {agent_state}")
 
-                elif callback_id == "weekly_update_modal":
-                    logger.info("Handling weekly_update_modal")
-                    values = payload["view"]["state"]["values"]
-                    metadata = json.loads(payload["view"]["private_metadata"])
-                    channel_id = metadata["channel_id"]
+            elif callback_id == "weekly_update_modal":
+                logger.info("Handling weekly_update_modal submission")
+                values = payload["view"]["state"]["values"]
+                metadata = json.loads(payload["view"]["private_metadata"])
+                channel_id = metadata["channel_id"]
+                try:
                     start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
                     end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
-                    top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
-                    top_support = values["top_support"]["top_support_input"]["value"]
-                    bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
-                    bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
-                    improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
-                    team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
-                    trends = values["trends"]["trends_input"]["value"]
-                    additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
+                except Exception as e:
+                    logger.error(f"Failed to parse dates: {e}")
+                    error_blocks = [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to process weekly update submission: Invalid date format. Please try again."}}
+                    ]
+                    session.post("https://slack.com/api/chat.postMessage", headers=headers, json={"channel": BOT_ERROR_CHANNEL_ID, "blocks": error_blocks})
+                    return jsonify({"response_action": "clear"}), 200
 
-                    user = payload["user"]["username"].replace(".", " ").title()
-                    week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
+                top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
+                top_support = values["top_support"]["top_support_input"]["value"]
+                bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
+                bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
+                improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
+                team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
+                trends = values["trends"]["trends_input"]["value"]
+                additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
 
-                                     # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
-                    year = start_date.year
-                    sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
-                    if sheets_service_info:
-                        sheets_service, spreadsheet_id = sheets_service_info
-                        sheet_name = f"Weekly {week}"
-                        headers = [
-                            "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
-                            "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
-                        ]
+                user = payload["user"]["username"].replace(".", " ").title()
+                week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
+
+                # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
+                year = start_date.year
+                sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
+                if sheets_service_info:
+                    sheets_service, spreadsheet_id = sheets_service_info
+                    sheet_name = f"Weekly {week}"
+                    headers = [
+                        "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
+                        "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
+                    ]
+                    try:
                         get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
                         body = {
                             "values": [[
@@ -1399,28 +1423,38 @@ def slack_interactions():
                             body=body
                         ).execute()
                         logger.info(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
-                    else:
-                        logger.warning(f"Could not log to Google Sheets for year {year} (weekly_update)")
-
-                    # Post the summary to Slack
-                    summary_blocks = [
-                        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
+                    except Exception as e:
+                        logger.error(f"Failed to log weekly update to Google Sheet: {e}")
+                        error_blocks = [
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to log weekly update to Google Sheet (sheet: {sheet_name}): {str(e)}"}}
+                        ]
+                        session.post("https://slack.com/api/chat.postMessage", headers=headers, json={"channel": BOT_ERROR_CHANNEL_ID, "blocks": error_blocks})
+                else:
+                    logger.warning(f"Could not log to Google Sheets for year {year} (weekly_update)")
+                    error_blocks = [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Could not log weekly update to Google Sheets for year {year} (weekly_update)."}}
                     ]
-                    post_slack_message(ALERT_CHANNEL_ID, summary_blocks)  # Post to ALERT_CHANNEL_ID for visibility
+                    session.post("https://slack.com/api/chat.postMessage", headers=headers, json={"channel": BOT_ERROR_CHANNEL_ID, "blocks": error_blocks})
 
-                    # Post the success message to ALERT_CHANNEL_ID
-                    success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
-                    success_blocks = [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
-                    ]
-                    post_slack_message(ALERT_CHANNEL_ID, success_blocks)  # Changed to ALERT_CHANNEL_ID
+                # Post the summary to Slack
+                summary_blocks = [
+                    {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
+                ]
+                post_slack_message(ALERT_CHANNEL_ID, summary_blocks)
+
+                # Post the success message to ALERT_CHANNEL_ID
+                success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
+                success_blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
+                ]
+                post_slack_message(ALERT_CHANNEL_ID, success_blocks)
 
                 return jsonify({"response_action": "clear"}), 200
 
@@ -1429,6 +1463,5 @@ def slack_interactions():
         logger.error(f"ERROR in /slack/interactions: {e}")
         return "", 200  # Return 200 to Slack to acknowledge the interaction
 
-# ========== MAIN ==========
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host='0.0.0.0', port=8080)
