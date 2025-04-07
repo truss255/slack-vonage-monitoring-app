@@ -96,16 +96,26 @@ employee_options = [
     {"text": {"type": "plain_text", "text": "Nicole Coleman"}, "value": "nicole_coleman"},
     {"text": {"type": "plain_text", "text": "Peggy Richardson"}, "value": "peggy_richardson"},
     {"text": {"type": "plain_text", "text": "Ramona Marshall"}, "value": "ramona_marshall"},
-    {"text": {"type": "plain_text", "text": "Rebecca Stokes"}, "value": "rebecca_stokes"}
+    {"text": {"type": "plain_text", "text": "Rebecca Stokes"}, "value": "rebecca_stokes"},
+    {"text": {"type": "plain_text", "text": "Tanya Russell"}, "value": "tanya_russell"}
 ]
 
-# Campaign mapping dictionary
+# Updated Campaign mapping dictionary
 CAMPAIGN_MAPPING = {
     "+13234547738": "SETC Incoming Calls",
     "+413122787476": "Maui Wildfire",
     "+313122192786": "Camp Lejeune",
     "+213122195489": "Depo-Provera",
-    "+312132055684": "LA Wildfire"
+    "+312132055684": "LA Wildfire",
+    "+13122787476": "Maui Wildfire Incoming Calls",
+    "+13128008559": "Maui Wildfire Incoming Calls",
+    "+16462168075": "Maui Wildfire Incoming Calls",
+    "+16463304966": "Maui Wildfire Incoming Calls",
+    "+12132135505": "Panish LA Fire Calls",
+    "+13128008564": "Panish LA Fire Calls",
+    "+12132055684": "LA Fire Incoming Calls",
+    "+13128008583": "LA Fire Incoming Calls",
+    "+13132179387": "LA Fire Incoming Calls"
 }
 
 def get_campaign_from_number(phone_number):
@@ -123,7 +133,7 @@ def post_slack_message(channel, blocks):
     payload = {"channel": channel, "blocks": blocks}
     response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
     if response.status_code != 200:
-        print(f"Failed to post to Slack: {response.text}")
+        print(f"Failed to post to Slack: {response.status_code} - {response.text}")
     else:
         print("Successfully posted to Slack")
 
@@ -532,9 +542,11 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         return True
     elif status == "Logged Out" and is_in_shift:
         return True
-    elif status in ["Device Busy", "Idle", "Away"]:
+    elif status in ["Device Busy", "Away"]:
         return True
-    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, agent, timestamp):
+    elif status == "Idle" and duration_min >= 22:  # Updated condition
+        return True
+    elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, event_data.get("agent"), timestamp):
         return True
 
     return False
@@ -580,7 +592,7 @@ def vonage_events():
     print("Received request to /vonage-events")
     try:
         data = request.json
-        print(f"Vonage event payload: {data}")
+        print(f"Vonage event payload: {json.dumps(data, indent=2)}")
 
         event_type = data.get("type", None)
         if not event_type:
@@ -592,6 +604,7 @@ def vonage_events():
         interaction_id = data.get("subject", data.get("data", {}).get("interaction", {}).get("interactionId", "-"))
 
         event_data = data.get("data", {})
+        event_data["timestamp"] = timestamp  # Store for later use
 
         # Extract agent name
         agent = None
@@ -601,14 +614,12 @@ def vonage_events():
             if agent_id:
                 agent = agent_id_to_name.get(agent_id, None)
         elif "interaction" in event_data:
-            # Handle channel.activityrecord.v0
             if "channel" in event_data["interaction"]:
                 channel = event_data["interaction"]["channel"]
                 if channel.get("party", {}).get("role") == "agent":
                     agent_id = channel["party"].get("agentId", None)
                     if agent_id:
                         agent = agent_id_to_name.get(agent_id, None)
-            # Handle other interaction events with "channels"
             elif "channels" in event_data["interaction"]:
                 for channel in event_data["interaction"]["channels"]:
                     if channel.get("party", {}).get("role") == "agent":
@@ -629,6 +640,9 @@ def vonage_events():
             print(f"WARNING: Could not determine agent name from Vonage payload. Agent ID: {agent_id}")
             return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
 
+        event_data["agent"] = agent  # Store agent name in event_data
+
+        # Extract duration
         duration_ms = 0
         if "interaction" in event_data and "channels" in event_data["interaction"]:
             for channel in event_data["interaction"]["channels"]:
@@ -639,11 +653,17 @@ def vonage_events():
             duration_ms = event_data.get("duration", 0)
         duration_min = parse_duration(duration_ms)
 
+        # Extract campaign phone number
+        campaign_phone = None
+        if "interaction" in event_data:
+            campaign_phone = event_data["interaction"].get("fromAddress", None) or event_data["interaction"].get("toAddress", None)
+        campaign = get_campaign_from_number(campaign_phone)
+
         if event_type == "channel.activityrecord.v0":
             disposition = event_data.get("interaction", {}).get("dispositionCode", "Not Specified")
             start_time = event_data.get("interaction", {}).get("startTime", "")
-            initial_direction = event_data.get("interaction", {}).get("initialDirection", "Unknown")
-            to_address = event_data.get("interaction", {}).get("toAddress", "")
+            initial_direction = event_data["interaction"].get("initialDirection", "Unknown")
+            to_address = event_data["interaction"].get("toAddress", "")
             campaign = get_campaign_from_number(to_address)
             log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id)
             return jsonify({"status": "disposition logged"}), 200
@@ -653,7 +673,7 @@ def vonage_events():
             return jsonify({"status": "skipped", "message": f"Notifications disabled for {event_type}"}), 200
 
         is_in_shift = is_within_shift(agent, timestamp)
-        print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}")
+        print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}, Campaign: {campaign}, Interaction ID: {interaction_id}")
 
         if should_trigger_alert(event_type, duration_min, is_in_shift, event_data):
             status = event_data.get("alert_status", event_type)
@@ -662,31 +682,33 @@ def vonage_events():
             team = agent_teams.get(agent, "Unknown Team")
             search_link = "https://nam.newvoicemedia.com/interaction-search"
             states_without_interaction = ["Lunch", "Break", "Comfort Break", "Logged Out", "Training", "In Meeting", "Paperwork", "Idle", "Away", "Ready", "Ready Outbound"]
+
+            buttons = [
+                {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
+            ]
+            if status not in states_without_interaction and interaction_id != "-":
+                buttons.extend([
+                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "🔍 Interaction Search"}, "url": search_link, "action_id": "interaction_search"}
+                ])
+            else:
+                buttons.append(
+                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"}
+                )
+
             if status in ["Training", "In Meeting", "Paperwork"]:
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
                     {"type": "actions", "elements": [
                         {"type": "button", "text": {"type": "plain_text", "text": "✅ Approved by Management"}, "value": f"approve|{agent}|{interaction_id}|{status}", "action_id": "approve_event"},
                         {"type": "button", "text": {"type": "plain_text", "text": "❌ Not Approved"}, "value": f"not_approve|{agent}|{interaction_id}|{status}", "action_id": "not_approve_event"}
                     ]}
                 ]
             else:
-                buttons = [
-                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
+                    {"type": "actions", "elements": buttons}
                 ]
-                if status not in states_without_interaction and interaction_id != "-":
-                    buttons.append(
-                        {"type": "button", "text": {"type": "plain_text", "text": "🔍 Interaction Search"}, "url": search_link, "action_id": "interaction_search"}
-                    )
-                    blocks = [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nInteraction ID: {interaction_id}"}},
-                        {"type": "actions", "elements": buttons}
-                    ]
-                else:
-                    blocks = [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
-                        {"type": "actions", "elements": buttons}
-                    ]
             post_slack_message(ALERT_CHANNEL_ID, blocks)
         return jsonify({"status": "posted"}), 200
     except Exception as e:
@@ -789,7 +811,7 @@ def slack_interactions():
 
     if payload["type"] == "block_actions":
         action_id = payload["actions"][0]["action_id"]
-        user = payload["user"]["username"]
+        user = payload["user"]["username"].replace(".", " ").title()
         response_url = payload["response_url"]
 
         if action_id == "assign_to_me":
@@ -877,6 +899,14 @@ def slack_interactions():
             else:
                 print(f"WARNING: Could not log to Google Sheets for year {year}")
 
+        elif action_id == "copy_interaction_id":
+            value = payload["actions"][0]["value"]
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
+            ]
+            requests.post(response_url, json={"replace_original": False, "blocks": blocks})
+            print(f"User {user} requested to copy Interaction ID: {value}")
+
         elif action_id == "open_followup":
             value = payload["actions"][0]["value"]
             _, agent, campaign, status, duration_min = value.split("|")
@@ -936,7 +966,7 @@ def slack_interactions():
             action = values["action"]["action_taken"]["value"]
             reason = values["reason"]["reason_for_issue"]["value"]
             notes = values["notes"]["additional_notes"]["value"]
-            user = payload["user"]["username"]
+            user = payload["user"]["username"].replace(".", " ").title()
 
             year = datetime.utcnow().year
             sheets_service_info = get_sheets_service(year)
@@ -960,32 +990,33 @@ def slack_interactions():
         elif callback_id == "weekly_update_modal":
             print("Handling weekly_update_modal")
             values = payload["view"]["state"]["values"]
-            start_date = values["start_date"]["start_date_picker"]["selected_date"]
-            end_date = values["end_date"]["end_date_picker"]["selected_date"]
-            top_performers = [option["value"] for option in values["top_performers"]["top_performers_select"]["selected_options"]]
+            start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
+            end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
+            top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
             top_support = values["top_support"]["top_support_input"]["value"]
-            bottom_performers = [option["value"] for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
+            bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
             bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
             improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
             team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
             trends = values["trends"]["trends_input"]["value"]
             additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
 
-            user = payload["user"]["username"]
-            week = f"{start_date} to {end_date}"
+            user = payload["user"]["username"].replace(".", " ").title()
+            week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
 
-            year = datetime.strptime(start_date, "%Y-%m-%d").year
+            year = start_date.year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = f"Weekly {week}"
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, [
-                    "Timestamp (UTC)", "Submitted By", "Start Date", "End Date", "Top Performers", "Support Actions",
+                headers = [
+                    "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
                     "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
-                ])
+                ]
+                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
                 body = {
                     "values": [[
-                        datetime.utcnow().isoformat(), user, start_date, end_date, ", ".join(top_performers), top_support,
+                        datetime.utcnow().isoformat(), user, ", ".join(top_performers), top_support,
                         ", ".join(bottom_performers), bottom_actions, improvement_plan, team_momentum, trends, additional_notes
                     ]]
                 }
@@ -1116,7 +1147,7 @@ def slack_command_weekly_update_form():
             "view": {
                 "type": "modal",
                 "callback_id": "weekly_update_modal",
-                "title": {"type": "plain_text", "text": "Team Progress Log"},  # Shortened to 18 characters
+                "title": {"type": "plain_text", "text": "Team Progress Log"},
                 "submit": {"type": "plain_text", "text": "Submit"},
                 "close": {"type": "plain_text", "text": "Close"},
                 "private_metadata": json.dumps({"channel_id": channel_id}),
