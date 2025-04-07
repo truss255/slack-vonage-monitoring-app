@@ -100,12 +100,18 @@ def post_slack_message(channel, blocks, thread_ts=None):
     payload = {"channel": channel, "blocks": blocks}
     if thread_ts:
         payload["thread_ts"] = thread_ts
-    response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-    if response.status_code != 200:
-        print(f"Failed to post to Slack: {response.status_code} - {response.text}")
-    else:
-        print("Successfully posted to Slack")
-    return response.json().get("ts")
+    try:
+        response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+        print(f"Slack API response status: {response.status_code}")
+        print(f"Slack API response: {response.text}")
+        if response.status_code != 200:
+            print(f"Failed to post to Slack: {response.status_code} - {response.text}")
+        else:
+            print("Successfully posted to Slack")
+        return response.json().get("ts")
+    except Exception as e:
+        print(f"ERROR: Failed to post to Slack: {e}")
+        return None
 
 # ========== EMPLOYEE OPTIONS FOR MULTI-SELECT ==========
 employee_options = [
@@ -414,24 +420,28 @@ agent_shifts = {
 
 # ========== TIMEZONE HANDLING ==========
 def is_within_shift(agent, timestamp):
-    agent_data = agent_shifts.get(agent)
-    if not agent_data:
-        print(f"WARNING: Agent {agent} not found in shift data")
-        return False
     try:
-        tz = pytz.timezone(agent_data["timezone"])
-    except pytz.exceptions.UnknownTimeZoneError as e:
-        print(f"ERROR: Invalid timezone for agent {agent}: {agent_data['timezone']}. Error: {e}")
+        agent_data = agent_shifts.get(agent)
+        if not agent_data:
+            print(f"WARNING: Agent {agent} not found in shift data")
+            return False
+        try:
+            tz = pytz.timezone(agent_data["timezone"])
+        except pytz.exceptions.UnknownTimeZoneError as e:
+            print(f"ERROR: Invalid timezone for agent {agent}: {agent_data['timezone']}. Error: {e}")
+            return False
+        local_time = timestamp.astimezone(tz)
+        day = local_time.strftime("%a")
+        shift = agent_data["shifts"].get(day)
+        if not shift:
+            return False
+        start_str, end_str = shift
+        start_time = tz.localize(datetime.strptime(f"{local_time.date()} {start_str}", "%Y-%m-%d %I%p"))
+        end_time = tz.localize(datetime.strptime(f"{local_time.date()} {end_str}", "%Y-%m-%d %I%p"))
+        return start_time <= local_time <= end_time
+    except Exception as e:
+        print(f"ERROR in is_within_shift for agent {agent}: {e}")
         return False
-    local_time = timestamp.astimezone(tz)
-    day = local_time.strftime("%a")
-    shift = agent_data["shifts"].get(day)
-    if not shift:
-        return False
-    start_str, end_str = shift
-    start_time = tz.localize(datetime.strptime(f"{local_time.date()} {start_str}", "%Y-%m-%d %I%p"))
-    end_time = tz.localize(datetime.strptime(f"{local_time.date()} {end_str}", "%Y-%m-%d %I%p"))
-    return start_time <= local_time <= end_time
 
 # ========== DURATION PARSING ==========
 def parse_duration(duration):
@@ -439,21 +449,26 @@ def parse_duration(duration):
         duration_ms = int(duration)
         duration_min = duration_ms / 1000 / 60  # Convert ms to minutes
         return duration_min
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        print(f"ERROR in parse_duration: {e}")
         return 0
 
 # ========== WEEKLY TAB HELPER ==========
 def get_weekly_tab_name(timestamp):
     """Determine the weekly tab name (e.g., 'Weekly Apr 1 - Apr 7') based on the timestamp."""
-    # Find the Monday of the current week (assuming weeks start on Monday)
-    date = timestamp.date()
-    days_to_monday = (date.weekday() - 0) % 7  # 0 is Monday
-    monday = date - timedelta(days=days_to_monday)
-    # Find the Sunday of the same week
-    sunday = monday + timedelta(days=6)
-    # Format the tab name
-    tab_name = f"Weekly {monday.strftime('%b %-d')} - {sunday.strftime('%b %-d')}"
-    return tab_name
+    try:
+        # Find the Monday of the current week (assuming weeks start on Monday)
+        date = timestamp.date()
+        days_to_monday = (date.weekday() - 0) % 7  # 0 is Monday
+        monday = date - timedelta(days=days_to_monday)
+        # Find the Sunday of the same week
+        sunday = monday + timedelta(days=6)
+        # Format the tab name
+        tab_name = f"Weekly {monday.strftime('%b %-d')} - {sunday.strftime('%b %-d')}"
+        return tab_name
+    except Exception as e:
+        print(f"ERROR in get_weekly_tab_name: {e}")
+        return "Weekly Unknown"
 
 # ========== GOOGLE SHEETS HELPER ==========
 def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
@@ -524,41 +539,48 @@ def get_event_duration(agent, current_timestamp, current_agent_state):
     try:
         # Check if the agent has a recorded presence state
         if agent not in agent_presence_states:
+            print(f"Agent {agent} has no recorded presence state")
             return 0
 
         last_state, last_timestamp = agent_presence_states[agent]
         if last_state == current_agent_state:
+            print(f"Agent {agent} state unchanged: {last_state}")
             return 0  # No duration if the state hasn't changed
 
         duration_ms = (current_timestamp - last_timestamp).total_seconds() * 1000
+        print(f"Calculated duration for {agent}: {duration_ms} ms")
         return duration_ms
     except Exception as e:
-        print(f"ERROR: Failed to calculate event duration for {agent}: {e}")
+        print(f"ERROR in get_event_duration for agent {agent}: {e}")
         return 0
 
 # ========== AGENT STATE RULES ==========
 def should_trigger_alert(agent_state, duration_min, is_in_shift, event_data=None):
-    event_data["alert_agent_state"] = agent_state
-    event_data["alert_duration_min"] = duration_min
+    try:
+        event_data["alert_agent_state"] = agent_state
+        event_data["alert_duration_min"] = duration_min
 
-    if agent_state in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
-        return True
-    elif agent_state in ["Ready", "Ready Outbound", "Idle", "Idle (Outbound)"] and duration_min > 2 and is_in_shift:
-        return True
-    elif agent_state == "Busy" and duration_min > 8:
-        return True
-    elif agent_state == "Lunch" and duration_min > 30:
-        return True
-    elif agent_state == "Break" and duration_min > 15:
-        return True
-    elif agent_state == "Comfort Break" and duration_min > 5:
-        return True
-    elif agent_state == "Logged Out" and is_in_shift:
-        return True
-    elif agent_state in ["Device Busy", "Device Unreachable", "Fault", "Away", "Extended Away", "In Meeting", "Paperwork", "Team Meeting", "Training"]:
-        return True
+        if agent_state in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
+            return True
+        elif agent_state in ["Ready", "Ready Outbound", "Idle", "Idle (Outbound)"] and duration_min > 2 and is_in_shift:
+            return True
+        elif agent_state == "Busy" and duration_min > 8:
+            return True
+        elif agent_state == "Lunch" and duration_min > 30:
+            return True
+        elif agent_state == "Break" and duration_min > 15:
+            return True
+        elif agent_state == "Comfort Break" and duration_min > 5:
+            return True
+        elif agent_state == "Logged Out" and is_in_shift:
+            return True
+        elif agent_state in ["Device Busy", "Device Unreachable", "Fault", "Away", "Extended Away", "In Meeting", "Paperwork", "Team Meeting", "Training"]:
+            return True
 
-    return False
+        return False
+    except Exception as e:
+        print(f"ERROR in should_trigger_alert: {e}")
+        return False
 
 def get_emoji_for_event(agent_state):
     emoji_map = {
@@ -591,6 +613,10 @@ def vonage_events():
     print("Received request to /vonage-events")
     try:
         data = request.json
+        if not data:
+            print("ERROR: No JSON data in request")
+            return jsonify({"status": "error", "message": "No JSON data in request"}), 400
+
         print(f"Vonage event payload: {json.dumps(data, indent=2)}")
 
         event_type = data.get("type", None)
@@ -604,7 +630,12 @@ def vonage_events():
             return jsonify({"status": "skipped", "message": f"Event type {event_type} not processed"}), 200
 
         timestamp_str = data.get("time", datetime.utcnow().isoformat())
-        timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
+        try:
+            timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
+        except Exception as e:
+            print(f"ERROR: Failed to parse timestamp {timestamp_str}: {e}")
+            return jsonify({"status": "error", "message": "Invalid timestamp"}), 400
+
         interaction_id = data.get("subject", "-") if event_type != "agent.presencechanged.v1" else "-"
 
         event_data = data.get("data", {})
@@ -614,7 +645,11 @@ def vonage_events():
         agent = None
         agent_id = None
         if event_type == "agent.presencechanged.v1":
-            agent_id = event_data.get("user", {}).get("agentId", None)
+            user_data = event_data.get("user", {})
+            if not user_data:
+                print("ERROR: Missing user data in agent.presencechanged.v1 event")
+                return jsonify({"status": "error", "message": "Missing user data"}), 400
+            agent_id = user_data.get("agentId", None)
             if agent_id:
                 agent = agent_id_to_name.get(agent_id, None)
         elif "interaction" in event_data:
@@ -692,6 +727,7 @@ def vonage_events():
             # Update the agent's presence state in memory
             if agent_state:
                 agent_presence_states[agent] = (agent_state, timestamp)
+                print(f"Updated presence state for {agent}: {agent_state} at {timestamp}")
 
         # If not a presence change, check for specific channel events
         if not agent_state:
@@ -720,9 +756,10 @@ def vonage_events():
 
         if not agent_state:
             agent_state = "Unknown"
+            print(f"WARNING: Agent state could not be determined for {agent}, defaulting to Unknown")
 
         # Calculate duration based on the last presence state change
-        duration_ms = get_event_duration(agent, interaction_id, timestamp, agent_state)
+        duration_ms = get_event_duration(agent, timestamp, agent_state)
         duration_min = parse_duration(duration_ms)
 
         if event_type in ["channel.ended.v1", "channel.disconnected.v1", "channel.activityrecord.v0", "interaction.detailrecord.v0"]:
@@ -773,8 +810,8 @@ def vonage_events():
             print(f"Alert not triggered for {agent}: Agent State={agent_state}, Duration={duration_min}, In Shift={is_in_shift}")
         return jsonify({"status": "posted"}), 200
     except Exception as e:
-        print(f"Error processing Vonage event: {e}")
-        return jsonify({"status": "error"}), 500
+        print(f"ERROR in /vonage-events: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 200  # Return 200 to Vonage to prevent it from stopping event delivery
 
 # ========== SLACK COMMANDS ==========
 @app.route("/slack/commands/weekly_update_form", methods=["GET", "POST"])
@@ -942,252 +979,268 @@ def slack_command_weekly_update_form():
 @app.route("/slack/interactions", methods=["POST"])
 def slack_interactions():
     print("Received request to /slack/interactions")
-    payload = json.loads(request.form["payload"])
-    print(f"Interactivity payload: {json.dumps(payload, indent=2)}")
+    try:
+        payload = json.loads(request.form["payload"])
+        print(f"Interactivity payload: {json.dumps(payload, indent=2)}")
 
-    if payload["type"] == "block_actions":
-        action_id = payload["actions"][0]["action_id"]
-        user = payload["user"]["username"].replace(".", " ").title()
-        response_url = payload["response_url"]
+        if payload["type"] == "block_actions":
+            action_id = payload["actions"][0]["action_id"]
+            user = payload["user"]["username"].replace(".", " ").title()
+            response_url = payload["response_url"]
 
-        if action_id == "assign_to_me":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, agent_state, duration_min = value.split("|")
-            duration_min = float(duration_min)
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|{duration_min}", "action_id": "open_followup"}
-                ]}
-            ]
-            response = requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            print(f"Updated Slack message with Follow-Up button: {response.status_code} - {response.text}")
+            if action_id == "assign_to_me":
+                value = payload["actions"][0]["value"]
+                _, agent, campaign, agent_state, duration_min = value.split("|")
+                duration_min = float(duration_min)
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
+                    {"type": "actions", "elements": [
+                        {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|{duration_min}", "action_id": "open_followup"}
+                    ]}
+                ]
+                response = requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+                print(f"Updated Slack message with Follow-Up button: {response.status_code} - {response.text}")
 
-            # Log the "Assigned to Me" action to the weekly tab
-            year = datetime.utcnow().year
-            team = agent_teams.get(agent, "Unknown Team")
-            log_to_followups(
-                agent=agent,
-                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                duration_min=duration_min,
-                interaction_id=campaign,
-                agent_state=agent_state,
-                campaign=campaign,
-                user=user,
-                approval_decision="Assigned"
-            )
-            print(f"Logged 'Assigned to Me' action for {agent}: {agent_state}")
+                # Log the "Assigned to Me" action to the weekly tab
+                year = datetime.utcnow().year
+                team = agent_teams.get(agent, "Unknown Team")
+                log_to_followups(
+                    agent=agent,
+                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                    duration_min=duration_min,
+                    interaction_id=campaign,
+                    agent_state=agent_state,
+                    campaign=campaign,
+                    user=user,
+                    approval_decision="Assigned"
+                )
+                print(f"Logged 'Assigned to Me' action for {agent}: {agent_state}")
 
-        elif action_id == "approve_event":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, agent_state = value.split("|")
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{agent_state} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
-            ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+            elif action_id == "approve_event":
+                value = payload["actions"][0]["value"]
+                _, agent, campaign, agent_state = value.split("|")
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{agent_state} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
+                ]
+                requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-            # Log the approval to the weekly tab
-            year = datetime.utcnow().year
-            team = agent_teams.get(agent, "Unknown Team")
-            log_to_followups(
-                agent=agent,
-                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                duration_min=0,
-                interaction_id=campaign,
-                agent_state=agent_state,
-                campaign=campaign,
-                user=user,
-                approval_decision="Approved",
-                approved_by=user
-            )
-            print(f"Logged approval for {agent}: {agent_state}")
+                # Log the approval to the weekly tab
+                year = datetime.utcnow().year
+                team = agent_teams.get(agent, "Unknown Team")
+                log_to_followups(
+                    agent=agent,
+                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                    duration_min=0,
+                    interaction_id=campaign,
+                    agent_state=agent_state,
+                    campaign=campaign,
+                    user=user,
+                    approval_decision="Approved",
+                    approved_by=user
+                )
+                print(f"Logged approval for {agent}: {agent_state}")
 
-        elif action_id == "not_approve_event":
-            value = payload["actions"][0]["value"]
-            _, agent, campaign, agent_state = value.split("|")
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|0", "action_id": "open_followup"}
-                ]}
-            ]
-            requests.post(response_url, json={"replace_original": True, "blocks": blocks})
+            elif action_id == "not_approve_event":
+                value = payload["actions"][0]["value"]
+                _, agent, campaign, agent_state = value.split("|")
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
+                    {"type": "actions", "elements": [
+                        {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|0", "action_id": "open_followup"}
+                    ]}
+                ]
+                requests.post(response_url, json={"replace_original": True, "blocks": blocks})
 
-            # Log the non-approval to the weekly tab
-            year = datetime.utcnow().year
-            team = agent_teams.get(agent, "Unknown Team")
-            log_to_followups(
-                agent=agent,
-                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                duration_min=0,
-                interaction_id=campaign,
-                agent_state=agent_state,
-                campaign=campaign,
-                user=user,
-                approval_decision="Not Approved",
-                approved_by=user
-            )
-            print(f"Logged non-approval for {agent}: {agent_state}")
+                # Log the non-approval to the weekly tab
+                year = datetime.utcnow().year
+                team = agent_teams.get(agent, "Unknown Team")
+                log_to_followups(
+                    agent=agent,
+                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                    duration_min=0,
+                    interaction_id=campaign,
+                    agent_state=agent_state,
+                    campaign=campaign,
+                    user=user,
+                    approval_decision="Not Approved",
+                    approved_by=user
+                )
+                print(f"Logged non-approval for {agent}: {agent_state}")
 
-        elif action_id == "copy_interaction_id":
-            value = payload["actions"][0]["value"]
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
-            ]
-            requests.post(response_url, json={"replace_original": False, "blocks": blocks})
-            print(f"User {user} requested to copy Interaction ID: {value}")
+            elif action_id == "copy_interaction_id":
+                value = payload["actions"][0]["value"]
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"📋 Interaction ID `{value}` - Please copy it manually from here."}}
+                ]
+                requests.post(response_url, json={"replace_original": False, "blocks": blocks})
+                print(f"User {user} requested to copy Interaction ID: {value}")
 
-        elif action_id == "open_followup":
-            print(f"Handling open_followup action for user: {user}")
-            value = payload["actions"][0]["value"]
-            print(f"Button value: {value}")
-            _, agent, campaign, agent_state, duration_min = value.split("|")
-            duration_min = float(duration_min)
-            trigger_id = payload["trigger_id"]
-            print(f"Trigger ID: {trigger_id}")
-            modal = {
-                "trigger_id": trigger_id,
-                "view": {
-                    "type": "modal",
-                    "callback_id": "followup_submit",
-                    "title": {"type": "plain_text", "text": "Follow-Up"},
-                    "submit": {"type": "plain_text", "text": "Submit"},
-                    "blocks": [
-                        {"type": "input", "block_id": "monitoring", "element": {
-                            "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
-                                {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
-                                {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
-                                {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
-                            ],
-                            "action_id": "monitoring_method"
-                        }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
-                        {"type": "input", "block_id": "action", "element": {
-                            "type": "plain_text_input", "action_id": "action_taken",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
-                        }, "label": {"type": "plain_text", "text": "What did you do?"}},
-                        {"type": "input", "block_id": "reason", "element": {
-                            "type": "plain_text_input", "action_id": "reason_for_issue",
-                            "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
-                        }, "label": {"type": "plain_text", "text": "Reason for issue"}},
-                        {"type": "input", "block_id": "notes", "element": {
-                            "type": "plain_text_input", "action_id": "additional_notes",
-                            "placeholder": {"type": "plain_text", "text": "Optional comments"}
-                        }, "label": {"type": "plain_text", "text": "Additional notes"}}
-                    ],
-                    "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "agent_state": agent_state, "duration_min": duration_min, "user": user})
+            elif action_id == "open_followup":
+                print(f"Handling open_followup action for user: {user}")
+                value = payload["actions"][0]["value"]
+                print(f"Button value: {value}")
+                _, agent, campaign, agent_state, duration_min = value.split("|")
+                duration_min = float(duration_min)
+                trigger_id = payload["trigger_id"]
+                print(f"Trigger ID: {trigger_id}")
+                modal = {
+                    "trigger_id": trigger_id,
+                    "view": {
+                        "type": "modal",
+                        "callback_id": "followup_submit",
+                        "title": {"type": "plain_text", "text": "Follow-Up"},
+                        "submit": {"type": "plain_text", "text": "Submit"},
+                        "blocks": [
+                            {"type": "input", "block_id": "monitoring", "element": {
+                                "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
+                                "options": [
+                                    {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
+                                    {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
+                                    {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
+                                    {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
+                                ],
+                                "action_id": "monitoring_method"
+                            }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
+                            {"type": "input", "block_id": "action", "element": {
+                                "type": "plain_text_input", "action_id": "action_taken",
+                                "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
+                            }, "label": {"type": "plain_text", "text": "What did you do?"}},
+                            {"type": "input", "block_id": "reason", "element": {
+                                "type": "plain_text_input", "action_id": "reason_for_issue",
+                                "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
+                            }, "label": {"type": "plain_text", "text": "Reason for issue"}},
+                            {"type": "input", "block_id": "notes", "element": {
+                                "type": "plain_text_input", "action_id": "additional_notes",
+                                "placeholder": {"type": "plain_text", "text": "Optional comments"}
+                            }, "label": {"type": "plain_text", "text": "Additional notes"}}
+                        ],
+                        "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "agent_state": agent_state, "duration_min": duration_min, "user": user})
+                    }
                 }
-            }
-            print(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
-            response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
-            print(f"Slack API response status: {response.status_code}")
-            print(f"Slack API response: {response.text}")
-            if response.status_code != 200 or not response.json().get("ok"):
-                print(f"ERROR: Failed to open follow-up modal: {response.text}")
-            else:
-                print("Follow-up modal request sent to Slack successfully")
+                print(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
+                response = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+                print(f"Slack API response status: {response.status_code}")
+                print(f"Slack API response: {response.text}")
+                if response.status_code != 200 or not response.json().get("ok"):
+                    print(f"ERROR: Failed to open follow-up modal: {response.text}")
+                    # Post a fallback message to the user
+                    fallback_blocks = [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Please try again."}}
+                    ]
+                    requests.post(response_url, json={"replace_original": False, "blocks": fallback_blocks})
+                else:
+                    print("Follow-up modal request sent to Slack successfully")
+                return "", 200
+
+            elif payload["type"] == "view_submission":
+                callback_id = payload["view"]["callback_id"]
+                print(f"Processing view submission with callback_id: {callback_id}")
+
+                if callback_id == "followup_submit":
+                    print("Handling followup_submit")
+                    values = payload["view"]["state"]["values"]
+                    metadata = json.loads(payload["view"]["private_metadata"])
+                    agent = metadata["agent"]
+                    interaction_id = metadata["interaction_id"]
+                    agent_state = metadata["agent_state"]
+                    duration_min = float(metadata["duration_min"])
+                    user = metadata["user"]
+                    monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
+                    action = values["action"]["action_taken"]["value"]
+                    reason = values["reason"]["reason_for_issue"]["value"]
+                    notes = values["notes"]["additional_notes"]["value"]
+
+                    # Log the follow-up submission to the weekly tab
+                    year = datetime.utcnow().year
+                    team = agent_teams.get(agent, "Unknown Team")
+                    log_to_followups(
+                        agent=agent,
+                        timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                        duration_min=duration_min,
+                        interaction_id=interaction_id,
+                        agent_state=agent_state,
+                        campaign="",
+                        user=user,
+                        monitoring=monitoring,
+                        action=action,
+                        reason=reason,
+                        notes=notes
+                    )
+                    print(f"Logged follow-up submission for {agent}: {agent_state}")
+
+                elif callback_id == "weekly_update_modal":
+                    print("Handling weekly_update_modal")
+                    values = payload["view"]["state"]["values"]
+                    metadata = json.loads(payload["view"]["private_metadata"])
+                    channel_id = metadata["channel_id"]
+                    start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
+                    end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
+                    top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
+                    top_support = values["top_support"]["top_support_input"]["value"]
+                    bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
+                    bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
+                    improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
+                    team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
+                    trends = values["trends"]["trends_input"]["value"]
+                    additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
+
+                    user = payload["user"]["username"].replace(".", " ").title()
+                    week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
+
+                    # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
+                    year = start_date.year
+                    sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
+                    if sheets_service_info:
+                        sheets_service, spreadsheet_id = sheets_service_info
+                        sheet_name = f"Weekly {week}"
+                        headers = [
+                            "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
+                            "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
+                        ]
+                        get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
+                        body = {
+                            "values": [[
+                                datetime.utcnow().isoformat(), user, ", ".join(top_performers), top_support,
+                                ", ".join(bottom_performers), bottom_actions, improvement_plan, team_momentum, trends, additional_notes
+                            ]]
+                        }
+                        sheets_service.spreadsheets().values().append(
+                            spreadsheetId=spreadsheet_id,
+                            range=f"'{sheet_name}'!A2",
+                            valueInputOption="USER_ENTERED",
+                            body=body
+                        ).execute()
+                        print(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
+                    else:
+                        print(f"WARNING: Could not log to Google Sheets for year {year} (weekly_update)")
+
+                    # Post the summary to Slack
+                    summary_blocks = [
+                        {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
+                    ]
+                    post_slack_message(channel_id, summary_blocks)
+
+                    # Post the success message
+                    success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
+                    success_blocks = [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
+                    ]
+                    post_slack_message(channel_id, success_blocks)
+
+                return jsonify({"response_action": "clear"}), 200
 
         return "", 200
+    except Exception as e:
+        print(f"ERROR in /slack/interactions: {e}")
+        return "", 200  # Return 200 to Slack to acknowledge the interaction
 
-    elif payload["type"] == "view_submission":
-        callback_id = payload["view"]["callback_id"]
-        print(f"Processing view submission with callback_id: {callback_id}")
-
-        if callback_id == "followup_submit":
-            print("Handling followup_submit")
-            values = payload["view"]["state"]["values"]
-            metadata = json.loads(payload["view"]["private_metadata"])
-            agent = metadata["agent"]
-            interaction_id = metadata["interaction_id"]
-            agent_state = metadata["agent_state"]
-            duration_min = float(metadata["duration_min"])
-            user = metadata["user"]
-            monitoring = values["monitoring"]["monitoring_method"]["selected_option"]["value"]
-            action = values["action"]["action_taken"]["value"]
-            reason = values["reason"]["reason_for_issue"]["value"]
-            notes = values["notes"]["additional_notes"]["value"]
-
-            # Log the follow-up submission to the weekly tab
-            year = datetime.utcnow().year
-            team = agent_teams.get(agent, "Unknown Team")
-            log_to_followups(
-                agent=agent,
-                timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                duration_min=duration_min,
-                interaction_id=interaction_id,
-                agent_state=agent_state,
-                campaign="",
-                user=user,
-                monitoring=monitoring,
-                action=action,
-                reason=reason,
-                notes=notes
-            )
-            print(f"Logged follow-up submission for {agent}: {agent_state}")
-
-        elif callback_id == "weekly_update_modal":
-            print("Handling weekly_update_modal")
-            values = payload["view"]["state"]["values"]
-            metadata = json.loads(payload["view"]["private_metadata"])
-            channel_id = metadata["channel_id"]
-            start_date = datetime.strptime(values["start_date"]["start_date_picker"]["selected_date"], "%Y-%m-%d")
-            end_date = datetime.strptime(values["end_date"]["end_date_picker"]["selected_date"], "%Y-%m-%d")
-            top_performers = [option["value"].replace("_", " ").title() for option in values["top_performers"]["top_performers_select"]["selected_options"]]
-            top_support = values["top_support"]["top_support_input"]["value"]
-            bottom_performers = [option["value"].replace("_", " ").title() for option in values["bottom_performers"]["bottom_performers_select"]["selected_options"]]
-            bottom_actions = values["bottom_actions"]["bottom_actions_input"]["value"]
-            improvement_plan = values["improvement_plan"]["improvement_plan_input"]["value"]
-            team_momentum = values["team_momentum"]["team_momentum_input"]["value"]
-            trends = values["trends"]["trends_input"]["value"]
-            additional_notes = values["additional_notes"]["notes_input"]["value"] if "additional_notes" in values else ""
-
-            user = payload["user"]["username"].replace(".", " ").title()
-            week = f"{start_date.strftime('%b %-d')} - {end_date.strftime('%b %-d')}"
-
-            # Log to Google Sheet (WEEKLY_UPDATE_SHEET_ID)
-            year = start_date.year
-            sheets_service_info = get_sheets_service(year, sheet_type="weekly_update")
-            if sheets_service_info:
-                sheets_service, spreadsheet_id = sheets_service_info
-                sheet_name = f"Weekly {week}"
-                headers = [
-                    "Timestamp (UTC)", "Submitted By", "Top Performers", "Support Actions",
-                    "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
-                ]
-                get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
-                body = {
-                    "values": [[
-                        datetime.utcnow().isoformat(), user, ", ".join(top_performers), top_support,
-                        ", ".join(bottom_performers), bottom_actions, improvement_plan, team_momentum, trends, additional_notes
-                    ]]
-                }
-                sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A2",
-                    valueInputOption="USER_ENTERED",
-                    body=body
-                ).execute()
-                print(f"Logged weekly update to Google Sheet: {sheet_name} for year {year}")
-            else:
-                print(f"WARNING: Could not log to Google Sheets for year {year} (weekly_update)")
-
-            # Post to Slack
-            blocks = [
-                {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
-            ]
-            post_slack_message(channel_id, blocks)
-
-        return jsonify({"response_action": "clear"}), 200
-
-    return "", 200
-
+# ========== MAIN ==========
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
