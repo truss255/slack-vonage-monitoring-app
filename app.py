@@ -112,13 +112,11 @@ def get_campaign_from_number(phone_number):
     """Map a Vonage phone number to a campaign name."""
     if not phone_number:
         return "Unknown Campaign"
-    # Remove any leading "+" if present (just to normalize)
     normalized_number = phone_number.lstrip("+")
-    # Check if the normalized number or original number matches any key
     for key, campaign in CAMPAIGN_MAPPING.items():
         if normalized_number == key.lstrip("+") or phone_number == key:
             return campaign
-    return "Unknown Campaign"  # Fallback if no match is found
+    return "Unknown Campaign"
 
 def post_slack_message(channel, blocks):
     print(f"Attempting to post to Slack channel: {channel}")
@@ -138,11 +136,8 @@ def current_week_range():
 
 def get_week_range(date):
     """Calculate the week range (Monday to Sunday) for a given date."""
-    # Find the Monday of the week
     monday = date - timedelta(days=date.weekday())
-    # Find the Sunday of the week
     sunday = monday + timedelta(days=6)
-    # Format as "Dispositions MMM D–MMM D"
     return f"Dispositions {monday.strftime('%b %-d')}–{sunday.strftime('%b %-d')}"
 
 def get_emoji_for_event(event_type):
@@ -439,7 +434,6 @@ def is_within_shift(agent, timestamp):
 
 # ========== DURATION PARSING ==========
 def parse_duration(duration):
-    # Duration is in milliseconds, convert to minutes
     try:
         duration_ms = int(duration)
         duration_min = duration_ms / 1000 / 60  # Convert ms to minutes
@@ -449,12 +443,9 @@ def parse_duration(duration):
 
 # ========== STATUS RULES ==========
 def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None):
-    # Map Vonage event types to internal statuses
     status = None
     if event_type == "channel.activityrecord.v0":
         disposition = event_data.get("interaction", {}).get("dispositionCode", "")
-        # No longer mapping "No Answer" to Unreachable
-        pass
     elif event_type == "channel.disconnected.v1":
         status = "Logged Out"
     elif event_type == "interaction.detailrecord.v0":
@@ -499,36 +490,34 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         elif presence_type == "away":
             status = "Away"
     elif event_type == "channel.alerted.v1":
-        status = "Ready"  # Agent is being alerted for a call
+        status = "Ready"
     elif event_type == "channel.connected.v1":
-        status = "Ready"  # Agent is connected to a call
+        status = "Ready"
     elif event_type == "channel.connectionfailed.v1":
-        status = "Device Busy"  # Agent failed to connect
+        status = "Device Busy"
     elif event_type == "channel.ended.v1":
-        status = "Logged Out"  # Call ended, agent might be idle
+        status = "Logged Out"
     elif event_type == "channel.held.v1":
-        status = "Break"  # Call on hold, agent might be on a break
+        status = "Break"
     elif event_type == "channel.interrupted.v1":
-        status = "Break"  # Call interrupted, agent might be on a break
+        status = "Break"
     elif event_type == "channel.parked.v1":
-        status = "Away"  # Call parked, agent might be away
+        status = "Away"
     elif event_type == "channel.resumed.v1":
-        status = "Ready"  # Call resumed, agent is active
+        status = "Ready"
     elif event_type == "channel.retrieved.v1":
-        status = "Ready"  # Call retrieved from hold, agent is active
+        status = "Ready"
     elif event_type == "channel.unparked.v1":
-        status = "Ready"  # Call unparked, agent is active
+        status = "Ready"
     elif event_type == "channel.wrapstarted.v1":
-        status = "Wrap"  # Agent is in wrap-up
+        status = "Wrap"
 
     if not status:
-        status = event_type  # Fallback to event_type if no mapping
+        status = event_type
 
-    # Store status and duration for logging
     event_data["alert_status"] = status
     event_data["alert_duration_min"] = duration_min
 
-    # Timed Alerts
     if status in ["Wrap", "Outgoing Wrap Up"] and duration_min > 2:
         return True
     elif status in ["Ready", "Ready Outbound"] and duration_min > 2 and is_in_shift:
@@ -541,25 +530,17 @@ def should_trigger_alert(event_type, duration_min, is_in_shift, event_data=None)
         return True
     elif status == "Comfort Break" and duration_min > 5:
         return True
-
-    # Conditional Alert
     elif status == "Logged Out" and is_in_shift:
         return True
-
-    # Immediate Alerts
     elif status in ["Device Busy", "Idle", "Away"]:
         return True
-
-    # Conditional Approval Alerts
     elif status in ["Training", "In Meeting", "Paperwork"] and not is_scheduled(status, agent, timestamp):
         return True
 
     return False
 
 def is_scheduled(event_type, agent, timestamp):
-    # Placeholder for scheduled event logic
-    # In a real implementation, this would check a schedule database or calendar
-    return False
+    return False  # Placeholder
 
 # ========== GOOGLE SHEETS HELPER ==========
 def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, headers):
@@ -567,10 +548,8 @@ def get_or_create_sheet_with_headers(service, spreadsheet_id, sheet_name, header
         spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = [s['properties']['title'] for s in spreadsheet['sheets']]
         if sheet_name not in sheets:
-            # Create the sheet
             requests_body = [{'addSheet': {'properties': {'title': sheet_name}}}]
             service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={'requests': requests_body}).execute()
-            # Add headers
             body = {"values": [headers]}
             service.spreadsheets().values().update(
                 spreadsheetId=spreadsheet_id,
@@ -603,8 +582,7 @@ def vonage_events():
         data = request.json
         print(f"Vonage event payload: {data}")
 
-        # Extract top-level fields
-        event_type = data.get("type", None)  # e.g., "channel.activityrecord.v0"
+        event_type = data.get("type", None)
         if not event_type:
             print("ERROR: Missing event type in Vonage payload")
             return jsonify({"status": "error", "message": "Missing event type"}), 400
@@ -613,7 +591,6 @@ def vonage_events():
         timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
         interaction_id = data.get("subject", data.get("data", {}).get("interaction", {}).get("interactionId", "-"))
 
-        # Extract nested data
         event_data = data.get("data", {})
 
         # Extract agent name
@@ -623,19 +600,28 @@ def vonage_events():
             agent_id = event_data.get("user", {}).get("agentId", None)
             if agent_id:
                 agent = agent_id_to_name.get(agent_id, None)
-        elif "interaction" in event_data and "channels" in event_data["interaction"]:
-            for channel in event_data["interaction"]["channels"]:
+        elif "interaction" in event_data:
+            # Handle channel.activityrecord.v0
+            if "channel" in event_data["interaction"]:
+                channel = event_data["interaction"]["channel"]
                 if channel.get("party", {}).get("role") == "agent":
-                    agent = channel["party"].get("address", None)
-                    break
+                    agent_id = channel["party"].get("agentId", None)
+                    if agent_id:
+                        agent = agent_id_to_name.get(agent_id, None)
+            # Handle other interaction events with "channels"
+            elif "channels" in event_data["interaction"]:
+                for channel in event_data["interaction"]["channels"]:
+                    if channel.get("party", {}).get("role") == "agent":
+                        agent_id = channel["party"].get("agentId", None)
+                        if agent_id:
+                            agent = agent_id_to_name.get(agent_id, None)
+                        break
         elif "channel" in event_data and "party" in event_data["channel"]:
-            agent = event_data["channel"]["party"].get("address", None)
-            if not agent and event_data["channel"]["party"].get("role") == "agent":
-                agent_id = event_data["channel"]["party"].get("agentId", None)
-                if agent_id:
-                    agent = agent_id_to_name.get(agent_id, None)
-        elif "user" in event_data:  # Fallback for events like channel.alerted.v1, channel.connected.v1
-            agent_id = event_data.get("user", {}).get("agentId", None)
+            agent_id = event_data["channel"]["party"].get("agentId", None)
+            if agent_id:
+                agent = agent_id_to_name.get(agent_id, None)
+        elif "user" in event_data:
+            agent_id = event_data["user"].get("agentId", None)
             if agent_id:
                 agent = agent_id_to_name.get(agent_id, None)
 
@@ -643,7 +629,6 @@ def vonage_events():
             print(f"WARNING: Could not determine agent name from Vonage payload. Agent ID: {agent_id}")
             return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
 
-        # Extract duration (convert from milliseconds to minutes)
         duration_ms = 0
         if "interaction" in event_data and "channels" in event_data["interaction"]:
             for channel in event_data["interaction"]["channels"]:
@@ -652,10 +637,8 @@ def vonage_events():
                     break
         elif "channel" in event_data:
             duration_ms = event_data.get("duration", 0)
-        # For presencechanged and other events, duration might not be applicable
         duration_min = parse_duration(duration_ms)
 
-        # Log disposition for activityrecord events
         if event_type == "channel.activityrecord.v0":
             disposition = event_data.get("interaction", {}).get("dispositionCode", "Not Specified")
             start_time = event_data.get("interaction", {}).get("startTime", "")
@@ -665,12 +648,10 @@ def vonage_events():
             log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id)
             return jsonify({"status": "disposition logged"}), 200
 
-        # Skip notifications for these event types
         if event_type in ["channel.ended.v1", "channel.disconnected.v1"]:
             print(f"Skipping notification for event type: {event_type}")
             return jsonify({"status": "skipped", "message": f"Notifications disabled for {event_type}"}), 200
 
-        # Handle status alerts for other event types
         is_in_shift = is_within_shift(agent, timestamp)
         print(f"Event: {event_type}, Agent: {agent}, Duration: {duration_min} min, In Shift: {is_in_shift}")
 
@@ -680,9 +661,7 @@ def vonage_events():
             emoji = get_emoji_for_event(status)
             team = agent_teams.get(agent, "Unknown Team")
             search_link = "https://nam.newvoicemedia.com/interaction-search"
-            # List of states that do not have an interactionId
             states_without_interaction = ["Lunch", "Break", "Comfort Break", "Logged Out", "Training", "In Meeting", "Paperwork", "Idle", "Away", "Ready", "Ready Outbound"]
-            # Conditional approval alerts for Training, In Meeting, Paperwork
             if status in ["Training", "In Meeting", "Paperwork"]:
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
@@ -692,17 +671,15 @@ def vonage_events():
                     ]}
                 ]
             else:
-                # Standard alerts
                 buttons = [
                     {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{status}|{duration_min}", "action_id": "assign_to_me"}
                 ]
-                # Add a search button if the status has an interactionId
                 if status not in states_without_interaction and interaction_id != "-":
                     buttons.append(
                         {"type": "button", "text": {"type": "plain_text", "text": "🔍 Interaction Search"}, "url": search_link, "action_id": "interaction_search"}
                     )
                     blocks = [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nInteraction ID: `{interaction_id}`"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{status} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nInteraction ID: {interaction_id}"}},
                         {"type": "actions", "elements": buttons}
                     ]
                 else:
@@ -718,9 +695,7 @@ def vonage_events():
 
 # ========== DISPOSITION LOGGING ==========
 def log_disposition(agent, disposition, timestamp, start_time, initial_direction, campaign, interaction_id):
-    """Log agent call dispositions to Google Sheets"""
     try:
-        # Determine the year from the timestamp
         year = timestamp.year
         sheets_service_info = get_sheets_service(year)
         if not sheets_service_info:
@@ -728,8 +703,6 @@ def log_disposition(agent, disposition, timestamp, start_time, initial_direction
             return
 
         sheets_service, spreadsheet_id = sheets_service_info
-
-        # Calculate the week range for the tab name
         sheet_name = get_week_range(timestamp)
         headers = ["Agent Name", "Disposition Code", "Count", "Start Time", "Initial Direction (Inbound/Outbound)", "Campaign Name", "Interaction ID"]
         get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, headers)
@@ -745,17 +718,13 @@ def log_disposition(agent, disposition, timestamp, start_time, initial_direction
         print(f"ERROR: Failed to log disposition: {e}")
 
 def generate_disposition_summary(date):
-    """Generate a summary of dispositions for a specific date"""
     try:
-        # Determine the year from the date
         year = datetime.strptime(date, "%Y-%m-%d").year
         sheets_service_info = get_sheets_service(year)
         if not sheets_service_info:
             return f"Google Sheets service not available for year {year}"
 
         sheets_service, spreadsheet_id = sheets_service_info
-
-        # Calculate the week range for the tab name
         sheet_name = get_week_range(datetime.strptime(date, "%Y-%m-%d"))
         try:
             result = sheets_service.spreadsheets().values().get(
@@ -769,9 +738,8 @@ def generate_disposition_summary(date):
         if not rows or len(rows) <= 1:
             return "No disposition data found for this date."
 
-        # Aggregate by Agent Name, Disposition Code, and Campaign
         count_map = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        for row in rows[1:]:  # Skip header row
+        for row in rows[1:]:
             if len(row) >= 7:
                 agent, dispo, _, _, _, campaign, _ = row[:7]
                 count_map[agent][dispo][campaign] += 1
@@ -787,14 +755,12 @@ def generate_disposition_summary(date):
         print(f"ERROR: Failed to generate disposition summary: {e}")
         return f"Error generating disposition summary: {str(e)}"
 
-# Add route for disposition report
 @app.route("/disposition-report", methods=["GET"])
 def disposition_report():
     print("Received request to /disposition-report")
     try:
         date = request.args.get('date', (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d"))
         summary = generate_disposition_summary(date)
-        # Determine the year from the date to get the correct spreadsheet_id
         year = datetime.strptime(date, "%Y-%m-%d").year
         sheets_service_info = get_sheets_service(year)
         if not sheets_service_info:
@@ -821,7 +787,6 @@ def slack_interactions():
     payload = json.loads(request.form["payload"])
     print(f"Interactivity payload: {payload}")
 
-    # Handle block actions (e.g., button clicks)
     if payload["type"] == "block_actions":
         action_id = payload["actions"][0]["action_id"]
         user = payload["user"]["username"]
@@ -838,7 +803,6 @@ def slack_interactions():
                 ]}
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            # Log to Team Lead Follow-Up Log
             year = datetime.utcnow().year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
@@ -865,7 +829,6 @@ def slack_interactions():
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{event_type} Approved*\nAgent: {agent}\nApproved by: @{user}\nInteraction ID: {campaign}"}}
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            # Log approval to Google Sheets
             year = datetime.utcnow().year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
@@ -895,7 +858,6 @@ def slack_interactions():
                 ]}
             ]
             requests.post(response_url, json={"replace_original": True, "blocks": blocks})
-            # Log non-approval to Google Sheets
             year = datetime.utcnow().year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
@@ -958,7 +920,6 @@ def slack_interactions():
 
         return "", 200
 
-    # Handle view submissions (e.g., modal submissions)
     elif payload["type"] == "view_submission":
         callback_id = payload["view"]["callback_id"]
         print(f"Processing view submission with callback_id: {callback_id}")
@@ -977,7 +938,6 @@ def slack_interactions():
             notes = values["notes"]["additional_notes"]["value"]
             user = payload["user"]["username"]
 
-            # Log to Google Sheets
             year = datetime.utcnow().year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
@@ -1014,13 +974,11 @@ def slack_interactions():
             user = payload["user"]["username"]
             week = f"{start_date} to {end_date}"
 
-            # Log to Google Sheets using the year from start_date
             year = datetime.strptime(start_date, "%Y-%m-%d").year
             sheets_service_info = get_sheets_service(year)
             if sheets_service_info:
                 sheets_service, spreadsheet_id = sheets_service_info
                 sheet_name = f"Weekly {week}"
-                # Ensure the sheet exists and has headers
                 get_or_create_sheet_with_headers(sheets_service, spreadsheet_id, sheet_name, [
                     "Timestamp (UTC)", "Submitted By", "Start Date", "End Date", "Top Performers", "Support Actions",
                     "Bottom Performers", "Action Plans", "Improvement Plan", "Team Momentum", "Trends", "Additional Notes"
@@ -1033,7 +991,7 @@ def slack_interactions():
                 }
                 sheets_service.spreadsheets().values().append(
                     spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A2",  # Start at A2 to leave room for headers
+                    range=f"'{sheet_name}'!A2",
                     valueInputOption="USER_ENTERED",
                     body=body
                 ).execute()
@@ -1041,7 +999,6 @@ def slack_interactions():
             else:
                 print(f"WARNING: Could not log to Google Sheets for year {year}")
 
-            # Post a confirmation message to the channel
             metadata = json.loads(payload["view"]["private_metadata"])
             channel_id = metadata["channel_id"]
             blocks = [
@@ -1062,12 +1019,10 @@ def slack_command_daily_report():
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
     print(f"Slash command payload: {request.form}")
-    # Generate and post a daily report
     today = datetime.utcnow()
     report_date = today.strftime("%b %d")
     date_for_dispositions = today.strftime("%Y-%m-%d")
 
-    # Get disposition summary for today (or yesterday if specified)
     text = request.form.get("text", "").strip()
     if text.lower() == "yesterday":
         today = today - timedelta(days=1)
@@ -1075,7 +1030,6 @@ def slack_command_daily_report():
         date_for_dispositions = today.strftime("%Y-%m-%d")
 
     disposition_summary = generate_disposition_summary(date_for_dispositions)
-    # Determine the year from the date to get the correct spreadsheet_id
     year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
     sheets_service_info = get_sheets_service(year)
     if not sheets_service_info:
@@ -1083,7 +1037,7 @@ def slack_command_daily_report():
     _, spreadsheet_id = sheets_service_info
     export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
 
-    top_performer = "Jeanette Bantz"  # Removed @ symbol
+    top_performer = "Jeanette Bantz"
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• Crystalbell Miranda – Wrap ❗\n• Rebecca Stokes – Call Time ❗\n• Carleisha Smith – Ready ❗ Not Ready ❗"}},
@@ -1111,17 +1065,14 @@ def slack_command_weekly_report():
         return "This endpoint is for Slack slash commands. Please use POST to send a command.", 200
 
     print(f"Slash command payload: {request.form}")
-    # Generate and post the weekly metrics report
     channel_id = request.form.get("channel_id")
     print(f"Posting to channel: {channel_id}")
 
-    # Get the date range for the previous week
     today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
-    start_date = end_date - timedelta(days=6)  # Previous Monday
+    end_date = today - timedelta(days=today.weekday() + 1)
+    start_date = end_date - timedelta(days=6)
     date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
 
-    # This would be where you'd fetch metrics from Vonage API
     vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
 
     blocks = [
@@ -1160,32 +1111,19 @@ def slack_command_weekly_update_form():
         print(f"SLACK_BOT_TOKEN: {'Set' if SLACK_BOT_TOKEN else 'Not Set'}")
         print(f"Headers: {headers}")
 
-        # Open the weekly update modal
         modal = {
             "trigger_id": trigger_id,
             "view": {
                 "type": "modal",
                 "callback_id": "weekly_update_modal",
-                "title": {
-                    "type": "plain_text",
-                    "text": "Team Progress & Performance Log"
-                },
-                "submit": {
-                    "type": "plain_text",
-                    "text": "Submit"
-                },
-                "close": {
-                    "type": "plain_text",
-                    "text": "Close"
-                },
+                "title": {"type": "plain_text", "text": "Team Progress Log"},  # Shortened to 18 characters
+                "submit": {"type": "plain_text", "text": "Submit"},
+                "close": {"type": "plain_text", "text": "Close"},
                 "private_metadata": json.dumps({"channel_id": channel_id}),
                 "blocks": [
                     {
                         "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": "*Let’s capture this week’s wins, challenges, and team progress below. 👇*"
-                        }
+                        "text": {"type": "mrkdwn", "text": "*Let’s capture this week’s wins, challenges, and team progress below. 👇*"}
                     },
                     {
                         "type": "input",
@@ -1193,15 +1131,9 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "datepicker",
                             "action_id": "start_date_picker",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Select start date"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Select start date"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Start of Week"
-                        }
+                        "label": {"type": "plain_text", "text": "Start of Week"}
                     },
                     {
                         "type": "input",
@@ -1209,15 +1141,9 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "datepicker",
                             "action_id": "end_date_picker",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Select end date"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Select end date"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "End of Week"
-                        }
+                        "label": {"type": "plain_text", "text": "End of Week"}
                     },
                     {
                         "type": "input",
@@ -1225,16 +1151,10 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "multi_static_select",
                             "action_id": "top_performers_select",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Select top performers"
-                            },
+                            "placeholder": {"type": "plain_text", "text": "Select top performers"},
                             "options": employee_options
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Top Performers"
-                        }
+                        "label": {"type": "plain_text", "text": "Top Performers"}
                     },
                     {
                         "type": "input",
@@ -1242,15 +1162,9 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "top_support_input",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "How are you supporting top performers?"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "How are you supporting top performers?"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Support Actions for Top Performers"
-                        }
+                        "label": {"type": "plain_text", "text": "Support Actions for Top Performers"}
                     },
                     {
                         "type": "input",
@@ -1258,16 +1172,10 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "multi_static_select",
                             "action_id": "bottom_performers_select",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Select bottom performers"
-                            },
+                            "placeholder": {"type": "plain_text", "text": "Select bottom performers"},
                             "options": employee_options
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Bottom Performers"
-                        }
+                        "label": {"type": "plain_text", "text": "Bottom Performers"}
                     },
                     {
                         "type": "input",
@@ -1275,15 +1183,9 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "bottom_actions_input",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Describe coaching, follow-up, etc."
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Describe coaching, follow-up, etc."}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Support Actions for Bottom Performers"
-                        }
+                        "label": {"type": "plain_text", "text": "Support Actions for Bottom Performers"}
                     },
                     {
                         "type": "input",
@@ -1291,15 +1193,9 @@ def slack_command_weekly_update_form():
                         "element": {
                             "type": "plain_text_input",
                             "action_id": "improvement_plan_input",
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Are they improving? What's the plan?"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Are they improving? What's the plan?"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Improvement Plan"
-                        }
+                        "label": {"type": "plain_text", "text": "Improvement Plan"}
                     },
                     {
                         "type": "input",
@@ -1308,15 +1204,9 @@ def slack_command_weekly_update_form():
                             "type": "plain_text_input",
                             "action_id": "team_momentum_input",
                             "multiline": True,
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Are you rising together or are there support gaps?"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Are you rising together or are there support gaps?"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Team Momentum"
-                        }
+                        "label": {"type": "plain_text", "text": "Team Momentum"}
                     },
                     {
                         "type": "input",
@@ -1325,15 +1215,9 @@ def slack_command_weekly_update_form():
                             "type": "plain_text_input",
                             "action_id": "trends_input",
                             "multiline": True,
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Any recurring behaviors, client feedback, or performance shifts?"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Any recurring behaviors, client feedback, or performance shifts?"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Trends"
-                        }
+                        "label": {"type": "plain_text", "text": "Trends"}
                     },
                     {
                         "type": "input",
@@ -1343,15 +1227,9 @@ def slack_command_weekly_update_form():
                             "type": "plain_text_input",
                             "action_id": "notes_input",
                             "multiline": True,
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Shoutouts, observations, anything else to share?"
-                            }
+                            "placeholder": {"type": "plain_text", "text": "Shoutouts, observations, anything else to share?"}
                         },
-                        "label": {
-                            "type": "plain_text",
-                            "text": "Additional Notes (Optional)"
-                        }
+                        "label": {"type": "plain_text", "text": "Additional Notes (Optional)"}
                     }
                 ]
             }
@@ -1372,14 +1250,11 @@ def slack_command_weekly_update_form():
 # ========== DAILY REPORT SCHEDULER ==========
 def trigger_daily_report():
     print("Triggering daily report")
-    # Get yesterday's date for the report
     yesterday = datetime.utcnow() - timedelta(days=1)
     report_date = yesterday.strftime("%b %d")
     date_for_dispositions = yesterday.strftime("%Y-%m-%d")
 
-    # Get disposition summary
     disposition_summary = generate_disposition_summary(date_for_dispositions)
-    # Determine the year from the date to get the correct spreadsheet_id
     year = datetime.strptime(date_for_dispositions, "%Y-%m-%d").year
     sheets_service_info = get_sheets_service(year)
     if not sheets_service_info:
@@ -1388,10 +1263,7 @@ def trigger_daily_report():
     _, spreadsheet_id = sheets_service_info
     export_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"
 
-    # Agent performance data
-    top_performer = "Jeanette Bantz"  # Removed @ symbol
-
-    # Create the report blocks
+    top_performer = "Jeanette Bantz"
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• Crystalbell Miranda – Wrap ❗\n• Rebecca Stokes – Call Time ❗\n• Carleisha Smith – Ready ❗ Not Ready ❗"}},
@@ -1410,13 +1282,11 @@ def trigger_daily_report():
 # ========== WEEKLY REPORT WITH VONAGE METRICS ==========
 def generate_weekly_report():
     print("Generating weekly report")
-    # Get the date range for the previous week
     today = datetime.utcnow()
-    end_date = today - timedelta(days=today.weekday() + 1)  # Last Sunday
-    start_date = end_date - timedelta(days=6)  # Previous Monday
+    end_date = today - timedelta(days=today.weekday() + 1)
+    start_date = end_date - timedelta(days=6)
     date_range = f"{start_date.strftime('%b %d')}–{end_date.strftime('%b %d')}"
 
-    # This would be where you'd fetch metrics from Vonage API
     vonage_report_url = f"https://dashboard.vonage.com/reports/weekly/{start_date.strftime('%Y-%m-%d')}"
 
     blocks = [
@@ -1431,9 +1301,7 @@ def generate_weekly_report():
 
     post_slack_message(ALERT_CHANNEL_ID, blocks)
 
-# Set up the scheduler
 scheduler = BackgroundScheduler(timezone="US/Eastern")
-# Add the daily report job to run at 7:00 AM Eastern Time
 scheduler.add_job(trigger_daily_report, 'cron', hour=7, minute=0)
 scheduler.start()
 
