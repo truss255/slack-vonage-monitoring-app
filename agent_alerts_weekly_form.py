@@ -222,7 +222,7 @@ agent_teams = {
     "Lakeira Robinson": "Team Bee Hive 🐝"
 }
 
-# Updated Campaign mapping dictionary
+# Updated Campaign mapping dictionary (used as fallback)
 CAMPAIGN_MAPPING = {
     "+13234547738": "SETC Incoming Calls",
     "+16822725314": "SETC Incoming Calls",
@@ -242,7 +242,7 @@ CAMPAIGN_MAPPING = {
 }
 
 def get_campaign_from_number(phone_number):
-    """Map a Vonage phone number to a campaign name."""
+    """Map a Vonage phone number to a campaign name (fallback method)."""
     if not phone_number:
         return "Unknown Campaign"
     normalized_number = phone_number.lstrip("+")
@@ -678,7 +678,7 @@ def vonage_events():
             logger.error("No JSON data in request")
             return jsonify({"status": "error", "message": "No JSON data in request"}), 400
 
-        logger.debug(f"Vonage event payload: {json.dumps(data, indent=2)}")
+        logger.debug(f"Vonage event payload: {json.dumps(data, indent=2, default=str)}")
 
         event_type = data.get("type", None)
         if not event_type:
@@ -721,21 +721,39 @@ def vonage_events():
             agent = event_data["user"].get("name", None) or event_data["user"].get("displayName", None) or event_data["user"].get("agentName", None)
 
         if not agent:
-            logger.warning(f"Could not determine agent name from Vonage payload. Full payload: {json.dumps(data, indent=2)}")
+            logger.warning(f"Could not determine agent name from Vonage payload. Full payload: {json.dumps(data, indent=2, default=str)}")
             return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
 
         # Validate agent name against known agents
         if agent not in agent_shifts:
-            logger.warning(f"Agent name '{agent}' not recognized in agent_shifts. Full payload: {json.dumps(data, indent=2)}")
+            logger.warning(f"Agent name '{agent}' not recognized in agent_shifts. Full payload: {json.dumps(data, indent=2, default=str)}")
             return jsonify({"status": "skipped", "message": "Unrecognized agent name"}), 200
 
         event_data["agent"] = agent
 
-        # Extract campaign phone number (only for interaction-based events)
-        campaign_phone = None
+        # Extract campaign from groups or skills (preferred), fall back to phone number
+        campaign = "Unknown Campaign"
         if "interaction" in event_data:
-            campaign_phone = event_data["interaction"].get("fromAddress", None) or event_data["interaction"].get("toAddress", None)
-        campaign = get_campaign_from_number(campaign_phone)
+            interaction = event_data["interaction"]
+            
+            # Try to get the campaign from 'groups' first
+            groups = interaction.get("groups", [])
+            if groups and isinstance(groups, list) and len(groups) > 0:
+                campaign = groups[0]  # Take the first group as the campaign name
+                logger.info(f"Campaign extracted from groups: {campaign}")
+            else:
+                # If no groups, try 'skills'
+                skills = interaction.get("skills", [])
+                if skills and isinstance(skills, list) and len(skills) > 0:
+                    campaign = skills[0]  # Take the first skill as the campaign name
+                    logger.info(f"Campaign extracted from skills: {campaign}")
+                else:
+                    # Fall back to phone number mapping if neither groups nor skills are available
+                    campaign_phone = interaction.get("fromAddress", None) or interaction.get("toAddress", None)
+                    campaign = get_campaign_from_number(campaign_phone)
+                    logger.info(f"Campaign extracted from phone number: {campaign}")
+        else:
+            logger.warning("No interaction data found in event payload, defaulting campaign to 'Unknown Campaign'")
 
         # Determine agent state
         agent_state = None
@@ -899,8 +917,9 @@ def vonage_events():
                     {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
                     {"type": "button", "text": {"type": "plain_text", "text": "🔗 Vonage"}, "url": vonage_link, "action_id": "vonage_link"}
                 ]
+                # Removed Interaction ID from the message text
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}\nInteraction ID: {interaction_id}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min\nCampaign: {campaign}"}},
                     {"type": "actions", "elements": buttons}
                 ]
             post_result = post_slack_message(ALERT_CHANNEL_ID, blocks)
@@ -1194,11 +1213,29 @@ def slack_interactions():
                 logger.info(f"Handling open_followup action for user: {user} at {datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(ET).isoformat()}")
                 value = payload["actions"][0]["value"]
                 logger.debug(f"Button value: {value}")
-                _, agent, campaign, agent_state, duration_min = value.split("|")
-                duration_min = float(duration_min)
+                try:
+                    _, agent, interaction_id, agent_state, duration_min = value.split("|")
+                    duration_min = float(duration_min)
+                except ValueError as e:
+                    logger.error(f"Failed to parse button value '{value}': {e}")
+                    fallback_blocks = [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Error processing follow-up request for {agent}. Please try again."}}
+                    ]
+                    post_slack_message(ALERT_CHANNEL_ID, fallback_blocks, thread_ts=payload["message"]["ts"])
+                    return "", 200
+
                 trigger_id = payload["trigger_id"]
                 thread_ts = payload["message"]["ts"]
                 logger.debug(f"Trigger ID: {trigger_id}")
+
+                # Ensure headers is accessible
+                global headers
+                if not isinstance(headers, dict) or "Authorization" not in headers:
+                    logger.warning("Headers variable is missing or invalid, reinitializing...")
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
 
                 modal = {
                     "trigger_id": trigger_id,
@@ -1213,37 +1250,69 @@ def slack_interactions():
                                 "type": "section",
                                 "text": {"type": "mrkdwn", "text": f"*Follow-Up for {agent} - {agent_state} Alert*"}
                             },
-                            {"type": "input", "block_id": "monitoring", "element": {
-                                "type": "static_select", "placeholder": {"type": "plain_text", "text": "Select an option"},
-                                "options": [
-                                    {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
-                                    {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
-                                    {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
-                                    {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
-                                ],
-                                "action_id": "monitoring_method"
-                            }, "label": {"type": "plain_text", "text": "Monitoring Method"}},
-                            {"type": "input", "block_id": "action", "element": {
-                                "type": "plain_text_input", "action_id": "action_taken",
-                                "multiline": True,
-                                "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
-                            }, "label": {"type": "plain_text", "text": "What did you do?"}},
-                            {"type": "input", "block_id": "reason", "element": {
-                                "type": "plain_text_input", "action_id": "reason_for_issue",
-                                "multiline": True,
-                                "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
-                            }, "label": {"type": "plain_text", "text": "Reason for issue"}},
-                            {"type": "input", "block_id": "notes", "element": {
-                                "type": "plain_text_input", "action_id": "additional_notes",
-                                "multiline": True,
-                                "placeholder": {"type": "plain_text", "text": "Optional comments"}
-                            }, "label": {"type": "plain_text", "text": "Additional notes"}}
+                            {
+                                "type": "input",
+                                "block_id": "monitoring",
+                                "element": {
+                                    "type": "static_select",
+                                    "placeholder": {"type": "plain_text", "text": "Select an option"},
+                                    "options": [
+                                        {"text": {"type": "plain_text", "text": "Listen In"}, "value": "listen_in"},
+                                        {"text": {"type": "plain_text", "text": "Coach"}, "value": "coach"},
+                                        {"text": {"type": "plain_text", "text": "Join"}, "value": "join"},
+                                        {"text": {"type": "plain_text", "text": "None"}, "value": "none"}
+                                    ],
+                                    "action_id": "monitoring_method"
+                                },
+                                "label": {"type": "plain_text", "text": "Monitoring Method"}
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "action",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "action_id": "action_taken",
+                                    "multiline": True,
+                                    "placeholder": {"type": "plain_text", "text": "e.g. Coached agent, verified call handling"}
+                                },
+                                "label": {"type": "plain_text", "text": "What did you do?"}
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "reason",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "action_id": "reason_for_issue",
+                                    "multiline": True,
+                                    "placeholder": {"type": "plain_text", "text": "e.g. Client had multiple questions"}
+                                },
+                                "label": {"type": "plain_text", "text": "Reason for issue"}
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "notes",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "action_id": "additional_notes",
+                                    "multiline": True,
+                                    "placeholder": {"type": "plain_text", "text": "Optional comments"}
+                                },
+                                "label": {"type": "plain_text", "text": "Additional notes"}
+                            }
                         ],
-                        "private_metadata": json.dumps({"agent": agent, "interaction_id": campaign, "agent_state": agent_state, "duration_min": duration_min, "user": user})
+                        "private_metadata": json.dumps({
+                            "agent": agent,
+                            "interaction_id": interaction_id,
+                            "agent_state": agent_state,
+                            "duration_min": duration_min,
+                            "user": user,
+                            "thread_ts": thread_ts
+                        })
                     }
                 }
-                logger.info(f"Sending views.open request to Slack with modal: {json.dumps(modal, indent=2)}")
-                for attempt in range(10):
+
+                logger.info(f"Sending views.open request to Slack with modal")
+                for attempt in range(5):
                     try:
                         response = session.post("https://slack.com/api/views.open", headers=headers, json=modal)
                         logger.info(f"Attempt {attempt + 1}: Slack API response status: {response.status_code}")
@@ -1254,14 +1323,14 @@ def slack_interactions():
                             time.sleep(retry_after)
                             continue
                         if response.status_code != 200 or not response.json().get("ok"):
-                            logger.error(f"Failed to open follow-up modal: {response.text}")
                             error_message = response.json().get("error", "Unknown error")
+                            logger.error(f"Failed to open follow-up modal: {response.text}")
                             if error_message == "invalid_trigger":
                                 logger.error("Trigger ID expired or invalid. Ensure the button is clicked within 30 seconds.")
                             elif error_message == "missing_scope":
-                                logger.error("Missing modals:write scope. Please add this scope to the Slack bot token.")
+                                logger.error("Missing modals:write scope. Check Slack bot token scopes.")
                             fallback_blocks = [
-                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {error_message}. Please use this [manual follow-up form](https://forms.gle/example) to submit your follow-up."}}
+                                {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open follow-up modal for {agent}. Error: {error_message}. Please try again or use a manual form."}}
                             ]
                             post_slack_message(ALERT_CHANNEL_ID, fallback_blocks, thread_ts=thread_ts)
                             error_blocks = [
@@ -1273,11 +1342,11 @@ def slack_interactions():
                         break
                     except Exception as e:
                         logger.error(f"ERROR: Failed to open follow-up modal: {e}")
-                        if attempt < 9:
+                        if attempt < 4:
                             time.sleep(2 ** attempt)
                             continue
                         fallback_blocks = [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {str(e)}. Please use this [manual follow-up form](https://forms.gle/example) to submit your follow-up."}}
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f"⚠️ Failed to open the follow-up modal for {agent}. Error: {str(e)}. Please use a manual form to submit your follow-up."}}
                         ]
                         post_slack_message(ALERT_CHANNEL_ID, fallback_blocks, thread_ts=thread_ts)
                         error_blocks = [
@@ -1415,6 +1484,9 @@ def slack_interactions():
     except Exception as e:
         logger.error(f"ERROR in /slack/interactions: {e}")
         return "", 200  # Return 200 to Slack to acknowledge the interaction
+
+if __name__ == "__main__":
+    app.run(host='
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
