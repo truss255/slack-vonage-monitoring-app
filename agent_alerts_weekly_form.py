@@ -198,30 +198,6 @@ employee_options = [
     {"text": {"type": "plain_text", "text": "Tanya Russell"}, "value": "tanya_russell"}
 ]
 
-# ========== AGENT ID TO NAME MAPPING ==========
-agent_id_to_name = {
-    "10008": "Briana Roque",
-    "1064": "Carla Hagerman",
-    "1044": "Carleisha Smith",
-    "10005": "Cassandra Dunn",
-    "1033": "Crystalbell Miranda",
-    "1113": "Dajah Blackwell",
-    "1030": "Felicia Martin",
-    "1045": "Felicia Randall",
-    "1128": "Indira Gonzalez",
-    "1060": "Jason McLaughlin",
-    "1115": "Jeanette Bantz",
-    "10019": "Jesse Lorenzana Escarfullery",
-    "1003": "Jessica Lopez",
-    "1058": "Lakeira Robinson",
-    "1041": "Lyne Jean",
-    "1056": "Natalie Sukhu",
-    "1112": "Nicole Coleman",
-    "1111": "Peggy Richardson",
-    "10016": "Ramona Marshall",
-    "1057": "Rebecca Stokes",
-}
-
 # Agent teams - Jessica Lopez moved to Team Adriana
 agent_teams = {
     "Carla Hagerman": "Team Adriana 💎",
@@ -249,7 +225,7 @@ agent_teams = {
 # Updated Campaign mapping dictionary
 CAMPAIGN_MAPPING = {
     "+13234547738": "SETC Incoming Calls",
-    "+16822725314": "SETC Incoming Calls",  # Matches the number in the screenshot
+    "+16822725314": "SETC Incoming Calls",
     "+413122787476": "Maui Wildfire",
     "+313122192786": "Camp Lejeune",
     "+213122195489": "Depo-Provera",
@@ -725,43 +701,33 @@ def vonage_events():
         event_data = data.get("data", {})
         event_data["timestamp"] = timestamp
 
-        # Extract agent name
+        # Extract agent name directly
         agent = None
-        agent_id = None
         if event_type == "agent.presencechanged.v1":
             user_data = event_data.get("user", {})
-            if not user_data:
-                logger.error("Missing user data in agent.presencechanged.v1 event")
-                return jsonify({"status": "error", "message": "Missing user data"}), 400
-            agent_id = user_data.get("agentId", None)
-            if agent_id:
-                agent = agent_id_to_name.get(agent_id, None)
+            agent = user_data.get("name", None) or user_data.get("displayName", None) or user_data.get("agentName", None)
         elif "interaction" in event_data:
             if "channel" in event_data["interaction"]:
                 channel = event_data["interaction"]["channel"]
-                if channel.get("party", {}).get("role") == "agent":
-                    agent_id = channel["party"].get("agentId", None)
-                    if agent_id:
-                        agent = agent_id_to_name.get(agent_id, None)
+                agent = channel.get("agentName", None) or channel.get("name", None)
             elif "channels" in event_data["interaction"]:
                 for channel in event_data["interaction"]["channels"]:
-                    if channel.get("party", {}).get("role") == "agent":
-                        agent_id = channel["party"].get("agentId", None)
-                        if agent_id:
-                            agent = agent_id_to_name.get(agent_id, None)
+                    agent = channel.get("agentName", None) or channel.get("name", None)
+                    if agent:
                         break
         elif "channel" in event_data and "party" in event_data["channel"]:
-            agent_id = event_data["channel"]["party"].get("agentId", None)
-            if agent_id:
-                agent = agent_id_to_name.get(agent_id, None)
+            agent = event_data["channel"].get("agentName", None) or event_data["channel"].get("name", None)
         elif "user" in event_data:
-            agent_id = event_data["user"].get("agentId", None)
-            if agent_id:
-                agent = agent_id_to_name.get(agent_id, None)
+            agent = event_data["user"].get("name", None) or event_data["user"].get("displayName", None) or event_data["user"].get("agentName", None)
 
         if not agent:
-            logger.warning(f"Could not determine agent name from Vonage payload. Agent ID: {agent_id}")
+            logger.warning(f"Could not determine agent name from Vonage payload. Full payload: {json.dumps(data, indent=2)}")
             return jsonify({"status": "skipped", "message": "Agent name not found, event skipped"}), 200
+
+        # Validate agent name against known agents
+        if agent not in agent_shifts:
+            logger.warning(f"Agent name '{agent}' not recognized in agent_shifts. Full payload: {json.dumps(data, indent=2)}")
+            return jsonify({"status": "skipped", "message": "Unrecognized agent name"}), 200
 
         event_data["agent"] = agent
 
@@ -1233,19 +1199,6 @@ def slack_interactions():
                 trigger_id = payload["trigger_id"]
                 thread_ts = payload["message"]["ts"]
                 logger.debug(f"Trigger ID: {trigger_id}")
-
-                # Log the time difference to check for trigger_id expiration
-                event_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
-                logger.info(f"Time since event: {(event_time - event_time).total_seconds()} seconds (should be < 30 seconds for trigger_id to be valid)")
-
-                # Ensure headers is defined
-                global headers
-                if 'headers' not in globals() or not headers:
-                    logger.error("Headers variable not defined. Using default headers.")
-                    headers = {
-                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-                        "Content-Type": "application/json"
-                    }
 
                 modal = {
                     "trigger_id": trigger_id,
