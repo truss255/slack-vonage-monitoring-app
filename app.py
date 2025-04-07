@@ -20,19 +20,19 @@ SCOPES = json.loads(os.environ.get("GOOGLE_SHEETS_SCOPES", '["https://www.google
 # Map years to spreadsheet IDs for dispositions
 DISPOSITION_SPREADSHEET_IDS = {
     2025: os.environ["DISPOSITION_SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
 }
 
 # Map years to spreadsheet IDs for follow-ups
 FOLLOWUP_SPREADSHEET_IDS = {
     2025: os.environ["FOLLOWUP_SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
 }
 
 # Map years to spreadsheet IDs for weekly updates
 WEEKLY_UPDATE_SPREADSHEET_IDS = {
     2025: os.environ["WEEKLY_UPDATE_SHEET_ID"],
-    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"  # Update this for 2026 if needed
+    2026: "1dlmzbFj5iC92oeDhrFzuJ-_eb_6sjXWMMZ6JNJ6EwoY"
 }
 
 # Handle Google service account JSON
@@ -632,7 +632,7 @@ def vonage_events():
 
         timestamp_str = data.get("time", datetime.utcnow().isoformat())
         timestamp = parse(timestamp_str).replace(tzinfo=pytz.UTC)
-        interaction_id = data.get("subject", data.get("data", {}).get("interaction", {}).get("interactionId", "-"))
+        interaction_id = data.get("subject", "-") if event_type != "agent.presencechanged.v1" else "-"
 
         event_data = data.get("data", {})
         event_data["timestamp"] = timestamp
@@ -673,9 +673,19 @@ def vonage_events():
 
         event_data["agent"] = agent
 
-        # Extract duration
+        # Extract duration for events
         duration_ms = 0
-        if "interaction" in event_data and "channels" in event_data["interaction"]:
+        if event_type == "agent.presencechanged.v1":
+            duration_ms = event_data.get("duration", 0)
+            if duration_ms == 0:
+                print(f"WARNING: Duration missing in agent.presencechanged.v1 event for agent {agent}. Skipping alert.")
+                return jsonify({"status": "skipped", "message": "Duration missing for presence event"}), 200
+        elif event_type == "channel.wrapstarted.v1":
+            duration_ms = event_data.get("duration", 0)
+            if duration_ms == 0:
+                print(f"WARNING: Duration missing in channel.wrapstarted.v1 event for agent {agent}. Skipping alert.")
+                return jsonify({"status": "skipped", "message": "Duration missing for wrap event"}), 200
+        elif "interaction" in event_data and "channels" in event_data["interaction"]:
             for channel in event_data["interaction"]["channels"]:
                 if channel.get("party", {}).get("role") == "agent":
                     duration_ms = channel.get("duration", 0)
@@ -684,7 +694,7 @@ def vonage_events():
             duration_ms = event_data.get("duration", 0)
         duration_min = parse_duration(duration_ms)
 
-        # Extract campaign phone number
+        # Extract campaign phone number (only for interaction-based events)
         campaign_phone = None
         if "interaction" in event_data:
             campaign_phone = event_data["interaction"].get("fromAddress", None) or event_data["interaction"].get("toAddress", None)
@@ -1288,7 +1298,7 @@ def slack_command_weekly_update_form():
                             "multiline": True,
                             "placeholder": {"type": "plain_text", "text": "Shoutouts, observations, anything else to share?"}
                         },
-                        "label": {"type": "plain_text", "text": "Additional Notes (Optional)"}
+                        "label": {"type": "plain_text", "text": "Additional Notes"}
                     }
                 ]
             }
@@ -1327,7 +1337,7 @@ def trigger_daily_report():
         {"type": "header", "text": {"type": "plain_text", "text": f"📊 Daily Agent Report – {report_date}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "🚨 *Missed Targets:*\n• Crystalbell Miranda – Wrap ❗\n• Rebecca Stokes – Call Time ❗\n• Carleisha Smith – Ready ❗ Not Ready ❗"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "✅ *Met All Targets:*\n• Jessica Lopez\n• Jason McLaughlin"}},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Performer:* {top_performer} – 0 alerts 🎯"}]},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏅 *Top Perfor mer:* {top_performer} – 0 alerts 🎯"}]},
         {"type": "section", "text": {"type": "mrkdwn", "text": disposition_summary}},
         {"type": "context", "elements": [
             {"type": "mrkdwn", "text": f"📎 *Full Disposition Report:* <{export_link}|View in Google Sheets>"}
