@@ -175,27 +175,25 @@ def post_slack_message(channel, blocks, thread_ts=None, retry_count=5):
 
 # ========== EMPLOYEE OPTIONS FOR MULTI-SELECT ==========
 employee_options = [
-    {"text": {"type": "plain_text", "text": "Briana Roque"}, "value": "briana_roque"},
-    {"text": {"type": "plain_text", "text": "Carla Hagerman"}, "value": "carla_hagerman"},
-    {"text": {"type": "plain_text", "text": "Carleisha Smith"}, "value": "carleisha_smith"},
-    {"text": {"type": "plain_text", "text": "Cassandra Dunn"}, "value": "cassandra_dunn"},
-    {"text": {"type": "plain_text", "text": "Crystalbell Miranda"}, "value": "crystalbell_miranda"},
-    {"text": {"type": "plain_text", "text": "Dajah Blackwell"}, "value": "dajah_blackwell"},
-    {"text": {"type": "plain_text", "text": "Felicia Martin"}, "value": "felicia_martin"},
-    {"text": {"type": "plain_text", "text": "Felicia Randall"}, "value": "felicia_randall"},
-    {"text": {"type": "plain_text", "text": "Indira Gonzalez"}, "value": "indira_gonzalez"},
-    {"text": {"type": "plain_text", "text": "Jason McLaughlin"}, "value": "jason_mclaughlin"},
-    {"text": {"type": "plain_text", "text": "Jeanette Bantz"}, "value": "jeanette_bantz"},
-    {"text": {"type": "plain_text", "text": "Jesse Lorenzana Escarfullery"}, "value": "jesse_lorenzana_escarfullery"},
-    {"text": {"type": "plain_text", "text": "Jessica Lopez"}, "value": "jessica_lopez"},
-    {"text": {"type": "plain_text", "text": "Lakeira Robinson"}, "value": "lakeira_robinson"},
-    {"text": {"type": "plain_text", "text": "Lyne Jean"}, "value": "lyne_jean"},
-    {"text": {"type": "plain_text", "text": "Natalie Sukhu"}, "value": "natalie_sukhu"},
-    {"text": {"type": "plain_text", "text": "Nicole Coleman"}, "value": "nicole_coleman"},
-    {"text": {"type": "plain_text", "text": "Peggy Richardson"}, "value": "peggy_richardson"},
-    {"text": {"type": "plain_text", "text": "Ramona Marshall"}, "value": "ramona_marshall"},
-    {"text": {"type": "plain_text", "text": "Rebecca Stokes"}, "value": "rebecca_stokes"},
-    {"text": {"type": "plain_text", "text": "Tanya Russell"}, "value": "tanya_russell"}
+    {"text": {"type": "plain_text", "text": "Briana Roque"}, "value": "10008"},
+    {"text": {"type": "plain_text", "text": "Carla Hagerman"}, "value": "1064"},
+    {"text": {"type": "plain_text", "text": "Cassandra Dunn"}, "value": "10005"},
+    {"text": {"type": "plain_text", "text": "Crystalbell Miranda"}, "value": "1033"},
+    {"text": {"type": "plain_text", "text": "Dajah Blackwell"}, "value": "1113"},
+    {"text": {"type": "plain_text", "text": "Felicia Martin"}, "value": "1030"},
+    {"text": {"type": "plain_text", "text": "Felicia Randall"}, "value": "1045"},
+    {"text": {"type": "plain_text", "text": "Indira Gonzalez"}, "value": "1128"},
+    {"text": {"type": "plain_text", "text": "Jason McLaughlin"}, "value": "1060"},
+    {"text": {"type": "plain_text", "text": "Jeanette Bantz"}, "value": "1115"},
+    {"text": {"type": "plain_text", "text": "Jesse Lorenzana Escarfullery"}, "value": "10019"},
+    {"text": {"type": "plain_text", "text": "Jessica Lopez"}, "value": "1003"},
+    {"text": {"type": "plain_text", "text": "Lakeira Robinson"}, "value": "1058"},
+    {"text": {"type": "plain_text", "text": "Lyne Jean"}, "value": "1041"},
+    {"text": {"type": "plain_text", "text": "Natalie Sukhu"}, "value": "1056"},
+    {"text": {"type": "plain_text", "text": "Nicole Coleman"}, "value": "1112"},
+    {"text": {"type": "plain_text", "text": "Peggy Richardson"}, "value": "1111"},
+    {"text": {"type": "plain_text", "text": "Ramona Marshall"}, "value": "10016"},
+    {"text": {"type": "plain_text", "text": "Rebecca Stokes"}, "value": "1057"}
 ]
 
 # Agent teams - Jessica Lopez moved to Team Adriana
@@ -480,17 +478,9 @@ def is_within_shift(agent, timestamp):
         logger.error(f"ERROR in is_within_shift for agent {agent}: {e}")
         return False
 
-# ========== DURATION PARSING ==========
-def parse_duration(duration_ms):
-    try:
-        duration_min = duration_ms / 1000 / 60  # Convert ms to minutes
-        return duration_min
-    except (ValueError, TypeError) as e:
-        logger.error(f"ERROR in parse_duration: {e}")
-        return 0
-
 # Calculate duration since the agent entered the current state
 def get_event_duration(agent, current_state, current_timestamp):
+    """Calculate duration in minutes since the agent entered the current state."""
     try:
         state_key = f"{agent}:{current_state}"
         if state_key not in agent_state_timestamps:
@@ -498,9 +488,10 @@ def get_event_duration(agent, current_state, current_timestamp):
             return 0
 
         start_timestamp = agent_state_timestamps[state_key]
-        duration_ms = (current_timestamp - start_timestamp).total_seconds() * 1000
-        logger.info(f"Calculated duration for {agent} in state {current_state}: {duration_ms} ms")
-        return duration_ms
+        duration_seconds = (current_timestamp - start_timestamp).total_seconds()
+        duration_min = duration_seconds / 60  # Convert seconds to minutes
+        logger.info(f"Calculated duration for {agent} in state {current_state}: {duration_min:.2f} minutes")
+        return duration_min
     except Exception as e:
         logger.error(f"ERROR in get_event_duration for agent {agent}: {e}")
         return 0
@@ -587,6 +578,7 @@ def log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state
 
 # ========== AGENT STATE RULES ==========
 def should_trigger_alert(agent_state, duration_min, is_in_shift, event_data=None):
+    """Check if an alert should be triggered based on the agent state and duration."""
     try:
         event_data["alert_agent_state"] = agent_state
         event_data["alert_duration_min"] = duration_min
@@ -863,8 +855,7 @@ def vonage_events():
             logger.info(f"Set initial timestamp for {agent} in state {agent_state}: {timestamp.astimezone(ET).isoformat()}")
 
         # Calculate duration based on the time the agent entered the current state
-        duration_ms = get_event_duration(agent, agent_state, timestamp)
-        duration_min = parse_duration(duration_ms)
+        duration_min = get_event_duration(agent, agent_state, timestamp)
 
         if event_type in ["channel.ended.v1", "channel.disconnected.v1", "interaction.detailrecord.v0"]:
             logger.info(f"Skipping notification for event type: {event_type}")
@@ -893,9 +884,6 @@ def vonage_events():
             vonage_link = "https://nam.newvoicemedia.com/CallCentre/portal/interactionsearch"
             states_without_interaction = ["Idle", "Idle (Outbound)", "Device Busy", "Device Unreachable", "Fault", "In Meeting", "Paperwork", "Team Meeting", "Training", "Logged Out"]
 
-            # Log the alert to the weekly tab
-            log_to_followups(agent, timestamp, duration_min, interaction_id, agent_state, campaign, status="Open")
-
             if agent_state in ["Training", "In Meeting", "Paperwork", "Team Meeting"]:
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
@@ -908,13 +896,13 @@ def vonage_events():
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"{emoji} *{agent_state} Alert*\nAgent: {agent}\nTeam: {team}\nDuration: {duration_min:.2f} min"}},
                     {"type": "actions", "elements": [
-                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}", "action_id": "assign_to_me"}
+                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}|{timestamp.isoformat()}|{campaign}", "action_id": "assign_to_me"}
                     ]}
                 ]
             else:
                 buttons = [
-                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}", "action_id": "assign_to_me"},
-                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy"}, "value": interaction_id, "action_id": "copy_interaction_id"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Assigned to Me"}, "value": f"assign|{agent}|{interaction_id}|{agent_state}|{duration_min}|{timestamp.isoformat()}|{campaign}", "action_id": "assign_to_me"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "📋 Copy Interaction ID"}, "value": interaction_id, "action_id": "copy_interaction_id"},
                     {"type": "button", "text": {"type": "plain_text", "text": "🔗 Vonage"}, "url": vonage_link, "action_id": "vonage_link"}
                 ]
                 # Removed Interaction ID from the message text
@@ -1118,32 +1106,18 @@ def slack_interactions():
 
             if action_id == "assign_to_me":
                 value = payload["actions"][0]["value"]
-                _, agent, campaign, agent_state, duration_min = value.split("|")
+                _, agent, interaction_id, agent_state, duration_min, original_timestamp, campaign = value.split("|")
                 duration_min = float(duration_min)
-                thread_ts = payload["message"]["ts"]
+                original_timestamp = parse(original_timestamp).replace(tzinfo=pytz.UTC)
                 blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"🔍 @{user} is investigating this {agent_state} alert for {agent}."}},
                     {"type": "actions", "elements": [
-                        {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{campaign}|{agent_state}|{duration_min}", "action_id": "open_followup"}
+                        {"type": "button", "text": {"type": "plain_text", "text": "📝 Follow-Up"}, "value": f"followup|{agent}|{interaction_id}|{agent_state}|{duration_min}|{original_timestamp.isoformat()}|{campaign}", "action_id": "open_followup"}
                     ]}
                 ]
                 post_slack_message(ALERT_CHANNEL_ID, blocks, thread_ts=thread_ts)
-
-                # Log the "Assigned to Me" action to the weekly tab
-                year = datetime.utcnow().year
-                team = agent_teams.get(agent, "Unknown Team")
-                log_to_followups(
-                    agent=agent,
-                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
-                    duration_min=duration_min,
-                    interaction_id=campaign,
-                    agent_state=agent_state,
-                    campaign=campaign,
-                    user=user,
-                    approval_decision="Assigned",
-                    status="Assigned"
-                )
-                logger.info(f"Logged 'Assigned to Me' action for {agent}: {agent_state}")
+                # Optional: Remove the log_to_followups call here if logging should only happen after follow-up.
+                # ...existing code...
 
             elif action_id == "approve_event":
                 value = payload["actions"][0]["value"]
@@ -1214,8 +1188,9 @@ def slack_interactions():
                 value = payload["actions"][0]["value"]
                 logger.debug(f"Button value: {value}")
                 try:
-                    _, agent, interaction_id, agent_state, duration_min = value.split("|")
+                    _, agent, interaction_id, agent_state, duration_min, original_timestamp, campaign = value.split("|")
                     duration_min = float(duration_min)
+                    original_timestamp = parse(original_timestamp).replace(tzinfo=pytz.UTC)
                 except ValueError as e:
                     logger.error(f"Failed to parse button value '{value}': {e}")
                     fallback_blocks = [
@@ -1306,7 +1281,9 @@ def slack_interactions():
                             "agent_state": agent_state,
                             "duration_min": duration_min,
                             "user": user,
-                            "thread_ts": thread_ts
+                            "thread_ts": thread_ts,
+                            "original_timestamp": original_timestamp.isoformat(),
+                            "campaign": campaign
                         })
                     }
                 }
@@ -1372,17 +1349,19 @@ def slack_interactions():
                 action = values["action"]["action_taken"]["value"]
                 reason = values["reason"]["reason_for_issue"]["value"]
                 notes = values["notes"]["additional_notes"]["value"]
+                original_timestamp = parse(metadata["original_timestamp"]).replace(tzinfo=pytz.UTC)
+                campaign = metadata["campaign"]
 
-                # Log the follow-up submission to the weekly tab
+                # Log the follow-up submission to the spreadsheet
                 year = datetime.utcnow().year
                 team = agent_teams.get(agent, "Unknown Team")
                 log_to_followups(
                     agent=agent,
-                    timestamp=datetime.utcnow().replace(tzinfo=pytz.UTC),
+                    timestamp=original_timestamp,  # Use the original timestamp from the event
                     duration_min=duration_min,
                     interaction_id=interaction_id,
                     agent_state=agent_state,
-                    campaign="",
+                    campaign=campaign,
                     user=user,
                     monitoring=monitoring,
                     action=action,
@@ -1391,6 +1370,13 @@ def slack_interactions():
                     status="Resolved"
                 )
                 logger.info(f"Logged follow-up submission for {agent}: {agent_state}")
+
+                # Post a resolved message to Slack
+                resolved_message = f"✅ Follow-up for {agent} ({agent_state}) has been resolved by @{user}."
+                resolved_blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": resolved_message}}
+                ]
+                post_slack_message(ALERT_CHANNEL_ID, resolved_blocks, thread_ts=metadata["thread_ts"])
 
             elif callback_id == "weekly_update_modal":
                 logger.info("Handling weekly_update_modal submission")
