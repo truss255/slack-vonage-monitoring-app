@@ -1465,6 +1465,13 @@ def slack_interactions():
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
+                    {"type":# Post the summary to Slack
+                summary_blocks = [
+                    {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
@@ -1484,9 +1491,6 @@ def slack_interactions():
     except Exception as e:
         logger.error(f"ERROR in /slack/interactions: {e}")
         return "", 200  # Return 200 to Slack to acknowledge the interaction
-
-if __name__ == "__main__":
-    app.run(host='
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
