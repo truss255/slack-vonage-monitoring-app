@@ -1465,13 +1465,6 @@ def slack_interactions():
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
-                    {"type":# Post the summary to Slack
-                summary_blocks = [
-                    {"type": "header", "text": {"type": "plain_text", "text": f"📈 Team Progress Log – {week}"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Submitted by:* {user}"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Performers:*\n{', '.join(top_performers)}\n*Support Actions:*\n{top_support}"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Bottom Performers:*\n{', '.join(bottom_performers)}\n*Support Actions:*\n{bottom_actions}"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Improvement Plan:*\n{improvement_plan}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Team Momentum:*\n{team_momentum}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Trends:*\n{trends}"}},
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*Additional Notes:*\n{additional_notes}" if additional_notes else "*Additional Notes:*\nNone"}}
@@ -1482,6 +1475,14 @@ def slack_interactions():
                 success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
                 success_blocks = [
                     {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
+                ]
+                post_slack_message(ALERT_CHANNEL_ID, success_blocks)
+
+                return jsonify({"response_action": "clear"}), 200
+
+        return "", 200
+    except Exception as e:
+        logger.error(f"ERROR in /slack {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
                 ]
                 post_slack_message(ALERT_CHANNEL_ID, success_blocks)
 
