@@ -1481,22 +1481,9 @@ def slack_interactions():
                 return jsonify({"response_action": "clear"}), 200
 
         return "", 200
-             elif callback_id == "weekly_Update_modal":
-             # ... (existing modal submission code) ...
+    except Exception as e:
+        logger.error(f"ERROR in /slack/interactions: {e}")
+        return "", 200  # Return 200 to Slack to acknowledge the interaction
 
-             # Post the success message to ALERT_CHANNEL_ID
-             success_message = f"✅ Weekly update for {week} submitted successfully by {user}!"
-             success_blocks = [
-                 {"type": "section", "text": {"type": "mrkdwn", "text": success_message}}
-             ]
-             post_slack_message(ALERT_CHANNEL_ID, success_blocks)
-
-             return jsonify({"response_action": "clear"}), 200
-
-     return "", 200
- except Exception as e:
-     logger.error(f"ERROR in /slack/interactions: {e}")
-     return "", 200  # Return 200 to Slack to acknowledge the interaction
-     
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
